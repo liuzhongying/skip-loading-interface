@@ -1,0 +1,212 @@
+<!doctype html>
+<html lang="zh-HK">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Skip Loading Control</title>
+    <link rel="stylesheet" href="/static/styles.css" />
+  </head>
+  <body>
+    <main class="app-shell">
+      <header class="topbar">
+        <div>
+          <h1>Skip Loading Control</h1>
+          <p>Submit STOP / RESUME requests, keep full Run_Num history, and export the day-end Excel.</p>
+        </div>
+        <button id="refreshButton" class="icon-button" title="Refresh">Refresh</button>
+      </header>
+
+      <section class="metrics" aria-label="Summary">
+        <button class="metric metric-button" id="pendingMetric" type="button">
+          <span>Pending</span>
+          <strong id="pendingCount">0</strong>
+        </button>
+        <button class="metric metric-button active" id="willExportMetric" type="button">
+          <span>Will Export Now</span>
+          <strong id="willExportNow">0</strong>
+        </button>
+        <button class="metric metric-button" id="currentStopMetric" type="button">
+          <span>Current STOP</span>
+          <strong id="currentStop">0</strong>
+        </button>
+        <button class="metric metric-button" id="currentResumeMetric" type="button">
+          <span>Current RESUME</span>
+          <strong id="currentResume">0</strong>
+        </button>
+      </section>
+
+      <section class="grid">
+        <form id="requestForm" class="panel">
+          <div class="panel-title">
+            <h2>New Request</h2>
+            <span id="todayLabel"></span>
+          </div>
+
+          <label>
+            Run_Num
+            <input name="run_num" required autocomplete="off" placeholder="e.g. 3337" />
+          </label>
+
+          <div class="segmented" role="group" aria-label="Action">
+            <label>
+              <input type="radio" name="action" value="STOP" checked />
+              <span>STOP</span>
+            </label>
+            <label>
+              <input type="radio" name="action" value="RESUME" />
+              <span>RESUME</span>
+            </label>
+          </div>
+
+          <div class="two-col">
+            <label>
+              Start_Date
+              <input name="start_date" type="date" required readonly />
+            </label>
+            <label>
+              End_Date
+              <input name="end_date" type="date" readonly />
+            </label>
+          </div>
+          <p id="dateRuleMessage" class="message"></p>
+
+          <div class="two-col">
+            <label>
+              Maker
+              <input name="maker" required placeholder="Your name" />
+            </label>
+            <label>
+              Checker
+              <input name="checker" placeholder="Assigned checker" />
+            </label>
+          </div>
+
+          <div class="two-col">
+            <label>
+              POD
+              <input name="pod" required placeholder="e.g. CPV" />
+            </label>
+            <span></span>
+          </div>
+
+          <label>
+            Remark / Purpose
+            <textarea name="remark" required rows="4" placeholder="Required: explain why this Run_Num should stop or resume"></textarea>
+          </label>
+
+          <button class="primary" type="submit">Submit Request</button>
+          <p id="formMessage" class="message"></p>
+        </form>
+
+        <section class="panel">
+          <div class="panel-title">
+            <h2>Run_Num Lookup</h2>
+          </div>
+          <div class="lookup-row">
+            <input id="lookupRunNum" placeholder="Enter Run_Num" />
+            <button id="lookupButton">Lookup</button>
+          </div>
+          <div id="currentStatus" class="status-box empty">No Run_Num selected.</div>
+          <div class="history-wrap">
+            <table>
+              <thead>
+                <tr>
+                  <th>ID</th>
+                  <th>Create Time</th>
+                  <th>Action</th>
+                  <th>Status</th>
+                  <th>Start_Date</th>
+                  <th>End_Date</th>
+                  <th>Maker</th>
+                  <th>Export Batch</th>
+                  <th>Remark</th>
+                </tr>
+              </thead>
+              <tbody id="historyBody"></tbody>
+            </table>
+          </div>
+        </section>
+      </section>
+
+      <section class="panel">
+        <div class="panel-title">
+          <h2>Checker Queue</h2>
+          <span>Only pending requests can be approved or rejected.</span>
+        </div>
+        <div class="checker-controls">
+          <input id="checkerFilter" placeholder="Enter checker name to view and approve/reject" />
+          <input id="podFilter" placeholder="Filter by POD" />
+          <button id="clearCheckerFilter">Clear</button>
+        </div>
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th>ID</th>
+                <th>Create Time</th>
+                <th>Run_Num</th>
+                <th>Action</th>
+                <th>Start_Date</th>
+                <th>End_Date</th>
+                <th>Maker</th>
+                <th>Checker</th>
+                <th>POD</th>
+                <th>Remark</th>
+                <th></th>
+              </tr>
+            </thead>
+            <tbody id="pendingBody"></tbody>
+          </table>
+        </div>
+      </section>
+
+      <section class="panel">
+        <div class="panel-title">
+          <h2>Import History Excel</h2>
+          <span>Imports the last row for each Run_Num as approved history.</span>
+        </div>
+        <form id="importForm" class="import-row">
+          <input id="importFile" name="file" type="file" accept=".xlsx,.xlsm" required />
+          <button class="primary" type="submit">Import History</button>
+        </form>
+        <p id="importMessage" class="message"></p>
+      </section>
+
+      <section class="panel">
+        <div class="panel-title">
+          <h2>Day-end Export</h2>
+          <span id="exportPreviewLabel">Shows the full picture that would be exported now.</span>
+        </div>
+        <div class="export-row">
+          <button id="exportButton" class="primary">Export Excel</button>
+          <a id="exportLink" class="download-link" hidden>Open exported file</a>
+        </div>
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th>ID</th>
+                <th>Create Time</th>
+                <th>Run_Num</th>
+                <th>Action</th>
+                <th>Status</th>
+                <th>Start_Date</th>
+                <th>End_Date</th>
+                <th>Checker</th>
+                <th>Approval_Date</th>
+                <th>Export Batch</th>
+              </tr>
+            </thead>
+            <tbody id="exportPreviewBody"></tbody>
+          </table>
+        </div>
+        <div class="pagination" aria-label="Day-end Export pagination">
+          <button id="exportPrevPage" type="button">Previous</button>
+          <span id="exportPageLabel">Page 1 of 1</span>
+          <button id="exportNextPage" type="button">Next</button>
+        </div>
+      </section>
+    </main>
+    <script src="/static/app.js"></script>
+  </body>
+</html>
