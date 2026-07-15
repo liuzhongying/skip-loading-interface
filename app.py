@@ -4,6 +4,7 @@ import json
 import mimetypes
 import os
 import sqlite3
+import sys
 from io import BytesIO
 from datetime import date, datetime, timedelta
 from pathlib import Path
@@ -16,10 +17,15 @@ from openpyxl.styles import Font, PatternFill
 from openpyxl.worksheet.table import Table, TableStyleInfo
 
 
-BASE_DIR = Path(__file__).resolve().parent
+if getattr(sys, "frozen", False):
+    BASE_DIR = Path(sys.executable).resolve().parent
+    BUNDLE_DIR = Path(getattr(sys, "_MEIPASS", BASE_DIR))
+else:
+    BASE_DIR = Path(__file__).resolve().parent
+    BUNDLE_DIR = BASE_DIR
 DATA_DIR = BASE_DIR / "data"
 EXPORT_DIR = BASE_DIR / "exports"
-STATIC_DIR = BASE_DIR / "static"
+STATIC_DIR = BUNDLE_DIR / "static"
 DB_PATH = DATA_DIR / "skip_loading.db"
 
 FAR_FUTURE = date(2099, 12, 31)
@@ -292,6 +298,23 @@ def get_defaults(run_num: str | None = None, action: str | None = None) -> dict[
             "message": "STOP starts today and stays active until 2099-12-31.",
         }
 
+    run_num_value = normalize_run_num(run_num or "")
+    with connect() as conn:
+        latest = latest_effective_request(conn, run_num_value)
+        if latest is None or latest["action"] != "STOP":
+            return {
+                "action": "RESUME",
+                "start_date": "",
+                "end_date": (today() - timedelta(days=1)).isoformat(),
+                "message": "RESUME requires an existing current STOP record.",
+            }
+        return {
+            "action": "RESUME",
+            "start_date": latest["start_date"],
+            "end_date": (today() - timedelta(days=1)).isoformat(),
+            "message": "RESUME keeps the current STOP Start_Date and sets End_Date to yesterday.",
+        }
+
 
 def normalize_header(value: Any) -> str:
     return str(value or "").strip().lower().replace(" ", "_")
@@ -378,23 +401,6 @@ def import_history_excel(file_bytes: bytes) -> dict[str, Any]:
         "skipped_blank_run_num": skipped_blank_run_num,
         "imported_ids": imported_ids,
     }
-
-    run_num_value = normalize_run_num(run_num or "")
-    with connect() as conn:
-        latest = latest_effective_request(conn, run_num_value)
-        if latest is None or latest["action"] != "STOP":
-            return {
-                "action": "RESUME",
-                "start_date": "",
-                "end_date": (today() - timedelta(days=1)).isoformat(),
-                "message": "RESUME requires an existing current STOP record.",
-            }
-        return {
-            "action": "RESUME",
-            "start_date": latest["start_date"],
-            "end_date": (today() - timedelta(days=1)).isoformat(),
-            "message": "RESUME keeps the current STOP Start_Date and sets End_Date to yesterday.",
-        }
 
 
 def decide_request(request_id: int, payload: dict[str, Any]) -> dict[str, Any]:
@@ -646,7 +652,10 @@ class AppHandler(SimpleHTTPRequestHandler):
             elif parsed.path.startswith("/exports/"):
                 self.serve_file(BASE_DIR / parsed.path.lstrip("/"))
             elif parsed.path == "/" or parsed.path.startswith("/static/"):
-                path = STATIC_DIR / "index.html" if parsed.path == "/" else BASE_DIR / parsed.path.lstrip("/")
+                if parsed.path == "/":
+                    path = STATIC_DIR / "index.html"
+                else:
+                    path = STATIC_DIR / parsed.path.removeprefix("/static/")
                 self.serve_file(path)
             else:
                 api_response(self, 404, {"error": "Not found"})
