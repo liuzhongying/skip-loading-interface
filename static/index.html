@@ -3,19 +3,30 @@
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>Skip Loading Control</title>
-    <link rel="stylesheet" href="/static/styles.css" />
+    <title>Use Case Control</title>
+    <link rel="stylesheet" href="/static/styles.css?v=20260804-skip-export-pagination" />
   </head>
   <body>
     <main class="app-shell">
       <header class="topbar">
         <div>
-          <h1>Skip Loading Control</h1>
+          <h1>Use Case Control</h1>
           <p>Submit STOP / RESUME requests, keep full Run_Num history, and export the day-end Excel.</p>
         </div>
-        <button id="refreshButton" class="icon-button" title="Refresh">Refresh</button>
+        <div class="topbar-actions">
+          <button id="exportJsonButton" class="icon-button" title="Export DB JSON">Export DB JSON</button>
+          <button id="refreshButton" class="icon-button" title="Refresh">Refresh</button>
+          <a id="exportJsonLink" class="download-link" hidden>Open JSON file</a>
+        </div>
       </header>
 
+      <nav class="tabs" aria-label="Pages">
+        <button class="tab-button active" id="skipTab" type="button" data-page="skipPage">Skip Loading</button>
+        <button class="tab-button" id="dagTab" type="button" data-page="dagPage">DAG Scheduler</button>
+        <button class="tab-button" id="tasksTab" type="button" data-page="tasksPage">TASKS</button>
+      </nav>
+
+      <div id="skipPage" class="page active">
       <section class="metrics" aria-label="Summary">
         <button class="metric metric-button" id="pendingMetric" type="button">
           <span>Pending</span>
@@ -84,7 +95,7 @@
           <div class="two-col">
             <label>
               POD
-              <input name="pod" required placeholder="e.g. CPV" />
+              <input name="pod" required placeholder="e.g. IWS" />
             </label>
             <span></span>
           </div>
@@ -203,10 +214,463 @@
         <div class="pagination" aria-label="Day-end Export pagination">
           <button id="exportPrevPage" type="button">Previous</button>
           <span id="exportPageLabel">Page 1 of 1</span>
+          <label class="page-jump">
+            Go to
+            <input id="exportPageInput" type="number" min="1" value="1" />
+          </label>
+          <button id="exportGoPage" type="button">Go</button>
           <button id="exportNextPage" type="button">Next</button>
         </div>
       </section>
+      </div>
+
+      <div id="dagPage" class="page" hidden>
+        <section class="panel">
+          <div class="panel-title">
+            <h2>DAG Scheduler Input</h2>
+            <span>Load a dag_id, edit the fields, then save a new version.</span>
+          </div>
+          <div class="lookup-row">
+            <input id="dagLookupId" placeholder="Enter dag_id to load for edit" />
+            <button id="dagLookupButton" type="button">Load for Edit</button>
+          </div>
+          <form id="dagForm" class="dag-form">
+            <label class="required">
+              dag_id
+              <input name="dag_id" required autocomplete="off" placeholder="e.g. CUS_001_DAILY_A" />
+            </label>
+            <label class="required">
+              description
+              <input name="description" required placeholder="e.g. NIGHT BATCH" />
+            </label>
+            <label class="required">
+              schedule_interval
+              <input name="schedule_interval" required placeholder="e.g. 00 20 * * 1,2,3,4,5,6" />
+            </label>
+            <label>
+              event_date_table
+              <input name="event_date_table" placeholder="Optional" />
+            </label>
+            <label class="required">
+              start_datetime
+              <input name="start_datetime" required placeholder="e.g. 2024,8,9,18,00" />
+            </label>
+            <label class="required">
+              end_date
+              <input name="end_date" required placeholder="e.g. 9999,12,31,20,00" />
+            </label>
+            <label class="required">
+              status
+              <input name="status" required value="dag_generation_completed" />
+            </label>
+            <label class="required wide">
+              email
+              <textarea name="email" required rows="3" placeholder="Name email list separated by ;"></textarea>
+            </label>
+            <label class="required">
+              owner
+              <input name="owner" required placeholder="e.g. 45053323" />
+            </label>
+            <label>
+              last_released_date
+              <input name="last_released_date" placeholder="Optional / system generated" />
+            </label>
+            <label class="required">
+              gcp_project_id
+              <input name="gcp_project_id" required value="hsbc-10272718-ombbusvis-prod" />
+            </label>
+            <label class="required">
+              ADGroup
+              <input name="ad_group" required value="gcp.hsbc-10272718-ombbusvis-prod.da-wpbcamp" />
+            </label>
+            <label class="required">
+              machineType
+              <input name="machine_type" required placeholder="e.g. n2d-highmem-48" />
+            </label>
+            <label class="required">
+              mountBucket
+              <input name="mount_bucket" required value="hsbc-10272718-ombbusvis-prod-team-wpbcamp" />
+            </label>
+            <label class="required">
+              imageVersion
+              <input name="image_version" required placeholder="e.g. python38" />
+            </label>
+            <label class="required">
+              requestType
+              <input name="request_type" required placeholder="e.g. airflow_other" />
+            </label>
+            <label>
+              numWorkers
+              <input name="num_workers" placeholder="Optional" />
+            </label>
+            <label class="required">
+              bucketFolder
+              <input name="bucket_folder" required value="callable_dags" />
+            </label>
+            <label class="required">
+              run_on_holiday
+              <select name="run_on_holiday" required>
+                <option value="">Select</option>
+                <option value="Y">Y</option>
+                <option value="N">N</option>
+              </select>
+            </label>
+            <label>
+              VM_alive_days
+              <input name="vm_alive_days" placeholder="Optional" />
+            </label>
+            <label class="required">
+              skip_run_base_completion_toke
+              <select name="skip_run_base_completion_toke" required>
+                <option value="">Select</option>
+                <option value="Y">Y</option>
+                <option value="N">N</option>
+              </select>
+            </label>
+            <label>
+              token_file_bucket
+              <input name="token_file_bucket" placeholder="Optional" />
+            </label>
+            <label class="wide">
+              token_file_path_in_bucket
+              <input name="token_file_path_in_bucket" placeholder="Optional" />
+            </label>
+            <label class="required">
+              token_file_offset
+              <input name="token_file_offset" required value="-1" />
+            </label>
+            <label>
+              pega_night_batch_flag
+              <select name="pega_night_batch_flag">
+                <option value=""></option>
+                <option value="Y">Y</option>
+                <option value="N">N</option>
+              </select>
+            </label>
+            <label>
+              stop_successful_mail_ser
+              <select name="stop_successful_mail_ser">
+                <option value=""></option>
+                <option value="Y">Y</option>
+                <option value="N">N</option>
+              </select>
+            </label>
+            <label>
+              pega_intra_batch_flag
+              <select name="pega_intra_batch_flag">
+                <option value=""></option>
+                <option value="Y">Y</option>
+                <option value="N">N</option>
+              </select>
+            </label>
+            <label>
+              myfeed_reminder_flag
+              <select name="myfeed_reminder_flag">
+                <option value=""></option>
+                <option value="Y">Y</option>
+                <option value="N">N</option>
+              </select>
+            </label>
+            <div class="form-actions wide">
+              <button class="primary" type="submit">Save DAG Row</button>
+              <button id="clearDagForm" type="button">Clear</button>
+            </div>
+          </form>
+          <p id="dagMessage" class="message"></p>
+        </section>
+
+        <section class="panel">
+          <div class="panel-title">
+            <h2>DAG History</h2>
+            <span id="dagHistoryLabel">No dag_id loaded.</span>
+          </div>
+          <div class="table-wrap">
+            <table class="wide-table">
+              <thead>
+                <tr>
+                  <th>Version ID</th>
+                  <th>Create Time</th>
+                  <th>Previous ID</th>
+                  <th>dag_id</th>
+                  <th>description</th>
+                  <th>schedule_interval</th>
+                  <th>start_datetime</th>
+                  <th>end_date</th>
+                  <th>status</th>
+                  <th>owner</th>
+                  <th>requestType</th>
+                  <th>run_on_holiday</th>
+                  <th>Changes</th>
+                </tr>
+              </thead>
+              <tbody id="dagHistoryBody">
+                <tr><td colspan="13">No history loaded.</td></tr>
+              </tbody>
+            </table>
+          </div>
+          <div class="pagination" aria-label="DAG History pagination">
+            <button id="dagHistoryPrevPage" type="button">Previous</button>
+            <span id="dagHistoryPageLabel">Page 1 of 1</span>
+            <label class="page-jump">
+              Go to
+              <input id="dagHistoryPageInput" type="number" min="1" value="1" />
+            </label>
+            <button id="dagHistoryGoPage" type="button">Go</button>
+            <button id="dagHistoryNextPage" type="button">Next</button>
+          </div>
+        </section>
+
+        <section class="panel">
+          <div class="panel-title">
+            <h2>DAG Records</h2>
+            <span>Current record per dag_id, newest first.</span>
+          </div>
+          <div class="checker-controls">
+            <input id="dagFilter" placeholder="Filter by dag_id" />
+            <button id="dagExportButton" class="primary" type="button">Export DAG Excel</button>
+            <a id="dagExportLink" class="download-link" hidden>Open exported file</a>
+          </div>
+          <form id="dagImportForm" class="import-row">
+            <input id="dagImportFile" name="file" type="file" accept=".xlsx,.xlsm" required />
+            <button class="primary" type="submit">Import DAG Excel</button>
+          </form>
+          <p id="dagImportMessage" class="message"></p>
+          <div class="table-wrap">
+            <table class="wide-table">
+              <thead>
+                <tr>
+                  <th>ID</th>
+                  <th>Create Time</th>
+                  <th>dag_id</th>
+                  <th>description</th>
+                  <th>schedule_interval</th>
+                  <th>start_datetime</th>
+                  <th>end_date</th>
+                  <th>status</th>
+                  <th>owner</th>
+                  <th>requestType</th>
+                  <th>run_on_holiday</th>
+                </tr>
+              </thead>
+              <tbody id="dagBody"></tbody>
+            </table>
+          </div>
+          <div class="pagination" aria-label="DAG Records pagination">
+            <button id="dagPrevPage" type="button">Previous</button>
+            <span id="dagPageLabel">Page 1 of 1</span>
+            <label class="page-jump">
+              Go to
+              <input id="dagPageInput" type="number" min="1" value="1" />
+            </label>
+            <button id="dagGoPage" type="button">Go</button>
+            <button id="dagNextPage" type="button">Next</button>
+          </div>
+        </section>
+      </div>
+
+      <div id="tasksPage" class="page" hidden>
+        <section class="panel">
+          <div class="panel-title">
+            <h2>TASKS Input</h2>
+            <span>Load a task_id, edit the fields, then save a new version.</span>
+          </div>
+          <div class="lookup-row">
+            <input id="taskLookupKey" placeholder="Enter task_id to load for edit" />
+            <button id="taskLookupButton" type="button">Load for Edit</button>
+          </div>
+          <form id="taskForm" class="dag-form">
+            <label class="required">
+              dag_id
+              <input name="dag_id" required autocomplete="off" placeholder="e.g. CUS_001_DAILY_A" />
+            </label>
+            <label class="required">
+              task_id
+              <input name="task_id" required placeholder="e.g. CUS_001_DAILY_A_TASK_RDP2912" />
+            </label>
+            <label class="required">
+              task_name
+              <input name="task_name" required placeholder="e.g. CUS_001_DAILY_A_TASK_RDP2912" />
+            </label>
+            <label class="required wide">
+              shell_command
+              <textarea name="shell_command" required rows="3" placeholder="python3 /airflow/..."></textarea>
+            </label>
+            <label>
+              dataproc_bucket
+              <input name="dataproc_bucket" placeholder="Optional" />
+            </label>
+            <label>
+              main_file_run_on_dataproc
+              <input name="main_file_run_on_dataproc" placeholder="Optional" />
+            </label>
+            <label class="wide">
+              main_python_args
+              <input name="main_python_args" placeholder="Optional" />
+            </label>
+            <label class="wide">
+              dependency_task
+              <input name="dependency_task" placeholder="Optional" />
+            </label>
+            <label class="required">
+              file_wait_bucket
+              <input name="file_wait_bucket" required value="hsbc-10272718-ombbusvis-prod-team-wpbcamp" />
+            </label>
+            <label class="wide">
+              file_wait
+              <input name="file_wait" placeholder="Optional" />
+            </label>
+            <label class="required">
+              filewait_time_out_in_secon
+              <input name="filewait_time_out_in_secon" required value="0" />
+            </label>
+            <label>
+              sensor_task_name
+              <input name="sensor_task_name" placeholder="Optional" />
+            </label>
+            <label>
+              parent_dag
+              <input name="parent_dag" placeholder="Optional" />
+            </label>
+            <label>
+              parent_task
+              <input name="parent_task" placeholder="Optional" />
+            </label>
+            <label>
+              marker_task_name
+              <input name="marker_task_name" placeholder="Optional" />
+            </label>
+            <label>
+              child_dag
+              <input name="child_dag" placeholder="Optional" />
+            </label>
+            <label>
+              child_task_id
+              <input name="child_task_id" placeholder="Optional" />
+            </label>
+            <label>
+              task_inactive_flag
+              <select name="task_inactive_flag">
+                <option value=""></option>
+                <option value="Y">Y</option>
+                <option value="N">N</option>
+              </select>
+            </label>
+            <label>
+              trigger_rule
+              <input name="trigger_rule" placeholder="e.g. all_done" />
+            </label>
+            <label class="wide">
+              task_unique_key
+              <input name="task_unique_key" placeholder="Auto if blank: dag_id||task_id" />
+            </label>
+            <label>
+              monthly_start_day
+              <input name="monthly_start_day" placeholder="Optional" />
+            </label>
+            <label>
+              monthly_end_day
+              <input name="monthly_end_day" placeholder="Optional" />
+            </label>
+            <label>
+              weekly_start_day
+              <input name="weekly_start_day" placeholder="Optional" />
+            </label>
+            <label>
+              weekly_end_day
+              <input name="weekly_end_day" placeholder="Optional" />
+            </label>
+            <div class="form-actions wide">
+              <button class="primary" type="submit">Save TASKS Row</button>
+              <button id="clearTaskForm" type="button">Clear</button>
+            </div>
+          </form>
+          <p id="taskMessage" class="message"></p>
+        </section>
+
+        <section class="panel">
+          <div class="panel-title">
+            <h2>TASKS History</h2>
+            <span id="taskHistoryLabel">No task_id loaded.</span>
+          </div>
+          <div class="table-wrap">
+            <table class="wide-table">
+              <thead>
+                <tr>
+                  <th>Version ID</th>
+                  <th>Create Time</th>
+                  <th>Previous ID</th>
+                  <th>dag_id</th>
+                  <th>task_id</th>
+                  <th>task_unique_key</th>
+                  <th>task_name</th>
+                  <th>trigger_rule</th>
+                  <th>inactive</th>
+                  <th>Changes</th>
+                </tr>
+              </thead>
+              <tbody id="taskHistoryBody">
+                <tr><td colspan="10">No history loaded.</td></tr>
+              </tbody>
+            </table>
+          </div>
+          <div class="pagination" aria-label="TASKS History pagination">
+            <button id="taskHistoryPrevPage" type="button">Previous</button>
+            <span id="taskHistoryPageLabel">Page 1 of 1</span>
+            <label class="page-jump">
+              Go to
+              <input id="taskHistoryPageInput" type="number" min="1" value="1" />
+            </label>
+            <button id="taskHistoryGoPage" type="button">Go</button>
+            <button id="taskHistoryNextPage" type="button">Next</button>
+          </div>
+        </section>
+
+        <section class="panel">
+          <div class="panel-title">
+            <h2>TASKS Records</h2>
+            <span>Current record per task_id, newest first.</span>
+          </div>
+          <div class="checker-controls">
+            <input id="taskFilter" placeholder="Filter by task_id" />
+            <button id="tasksExportButton" class="primary" type="button">Export TASKS Excel</button>
+            <a id="tasksExportLink" class="download-link" hidden>Open exported file</a>
+          </div>
+          <form id="tasksImportForm" class="import-row">
+            <input id="tasksImportFile" name="file" type="file" accept=".xlsx,.xlsm" required />
+            <button class="primary" type="submit">Import TASKS Excel</button>
+          </form>
+          <p id="tasksImportMessage" class="message"></p>
+          <div class="table-wrap">
+            <table class="wide-table">
+              <thead>
+                <tr>
+                  <th>ID</th>
+                  <th>Create Time</th>
+                  <th>dag_id</th>
+                  <th>task_id</th>
+                  <th>task_unique_key</th>
+                  <th>task_name</th>
+                  <th>shell_command</th>
+                  <th>dependency_task</th>
+                  <th>trigger_rule</th>
+                </tr>
+              </thead>
+              <tbody id="taskBody"></tbody>
+            </table>
+          </div>
+          <div class="pagination" aria-label="TASKS Records pagination">
+            <button id="taskPrevPage" type="button">Previous</button>
+            <span id="taskPageLabel">Page 1 of 1</span>
+            <label class="page-jump">
+              Go to
+              <input id="taskPageInput" type="number" min="1" value="1" />
+            </label>
+            <button id="taskGoPage" type="button">Go</button>
+            <button id="taskNextPage" type="button">Next</button>
+          </div>
+        </section>
+      </div>
     </main>
-    <script src="/static/app.js"></script>
+    <script src="/static/app.js?v=20260804-db-json-export"></script>
   </body>
 </html>

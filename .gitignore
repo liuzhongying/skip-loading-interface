@@ -1,4 +1,11 @@
 data/*.db
-exports/*.xlsx
+data/backups/
+exports/
 __pycache__/
 *.pyc
+.codex-remote-attachments/
+build/
+dist/
+demo-lite-package/
+*.spec
+skip-loading-interface-demo.zip

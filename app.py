@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import mimetypes
 import os
+import re
 import sqlite3
 import sys
 from io import BytesIO
@@ -23,26 +24,130 @@ if getattr(sys, "frozen", False):
 else:
     BASE_DIR = Path(__file__).resolve().parent
     BUNDLE_DIR = BASE_DIR
-DATA_DIR = BASE_DIR / "data"
-EXPORT_DIR = BASE_DIR / "exports"
+
+
+def configured_path(env_name: str, default: Path) -> Path:
+    value = os.environ.get(env_name, "").strip()
+    return Path(value) if value else default
+
+
+DB_PATH = configured_path("SKIP_LOADING_DB_PATH", BASE_DIR / "data" / "skip_loading.db")
+EXPORT_DIR = configured_path("SKIP_LOADING_EXPORT_DIR", BASE_DIR / "exports")
+BACKUP_DIR = configured_path("SKIP_LOADING_BACKUP_DIR", DB_PATH.parent / "backups")
 STATIC_DIR = BUNDLE_DIR / "static"
-DB_PATH = DATA_DIR / "skip_loading.db"
 
 FAR_FUTURE = date(2099, 12, 31)
 DATE_FORMAT = "%Y-%m-%d"
 EXCEL_DATE_FORMAT = "dd mmm yyyy"
+DATABASE_BUSY_MESSAGE = "Another user is saving. Please retry after a few seconds."
+DAG_COLUMNS = [
+    ("dag_id", "dag_id"),
+    ("description", "description"),
+    ("schedule_interval", "schedule_interval"),
+    ("event_date_table", "event_date_table"),
+    ("start_datetime", "start_datetime"),
+    ("end_date", "end_date"),
+    ("status", "status"),
+    ("email", "email"),
+    ("owner", "owner"),
+    ("last_released_date", "last_released_date"),
+    ("gcp_project_id", "gcp_project_id"),
+    ("ad_group", "ADGroup"),
+    ("machine_type", "machineType"),
+    ("mount_bucket", "mountBucket"),
+    ("image_version", "imageVersion"),
+    ("request_type", "requestType"),
+    ("num_workers", "numWorkers"),
+    ("bucket_folder", "bucketFolder"),
+    ("run_on_holiday", "run_on_holiday"),
+    ("vm_alive_days", "VM_alive_days"),
+    ("skip_run_base_completion_toke", "skip_run_base_completion_toke"),
+    ("token_file_bucket", "token_file_bucket"),
+    ("token_file_path_in_bucket", "token_file_path_in_bucket"),
+    ("token_file_offset", "token_file_offset"),
+    ("pega_night_batch_flag", "pega_night_batch_flag"),
+    ("stop_successful_mail_ser", "stop_successful_mail_ser"),
+    ("pega_intra_batch_flag", "pega_intra_batch_flag"),
+    ("myfeed_reminder_flag", "myfeed_reminder_flag"),
+]
+DAG_REQUIRED_FIELDS = {
+    "dag_id",
+    "description",
+    "schedule_interval",
+    "start_datetime",
+    "end_date",
+    "status",
+    "email",
+    "owner",
+    "gcp_project_id",
+    "ad_group",
+    "machine_type",
+    "mount_bucket",
+    "image_version",
+    "request_type",
+    "bucket_folder",
+    "run_on_holiday",
+    "skip_run_base_completion_toke",
+    "token_file_offset",
+}
+TASK_COLUMNS = [
+    ("dag_id", "dag_id"),
+    ("task_id", "task_id"),
+    ("task_name", "task_name"),
+    ("shell_command", "shell_command"),
+    ("dataproc_bucket", "dataproc_bucket"),
+    ("main_file_run_on_dataproc", "main_file_run_on_dataproc"),
+    ("main_python_args", "main_python_args"),
+    ("dependency_task", "dependency_task"),
+    ("file_wait_bucket", "file_wait_bucket"),
+    ("file_wait", "file_wait"),
+    ("filewait_time_out_in_secon", "filewait_time_out_in_secon"),
+    ("sensor_task_name", "sensor_task_name"),
+    ("parent_dag", "parent_dag"),
+    ("parent_task", "parent_task"),
+    ("marker_task_name", "marker_task_name"),
+    ("child_dag", "child_dag"),
+    ("child_task_id", "child_task_id"),
+    ("task_inactive_flag", "task_inactive_flag"),
+    ("trigger_rule", "trigger_rule"),
+    ("task_unique_key", "task_unique_key"),
+    ("monthly_start_day", "monthly_start_day"),
+    ("monthly_end_day", "monthly_end_day"),
+    ("weekly_start_day", "weekly_start_day"),
+    ("weekly_end_day", "weekly_end_day"),
+]
+TASK_REQUIRED_FIELDS = {
+    "dag_id",
+    "task_id",
+    "task_name",
+    "shell_command",
+    "file_wait_bucket",
+    "filewait_time_out_in_secon",
+}
 
 
 def ensure_dirs() -> None:
-    DATA_DIR.mkdir(exist_ok=True)
-    EXPORT_DIR.mkdir(exist_ok=True)
+    DB_PATH.parent.mkdir(parents=True, exist_ok=True)
+    EXPORT_DIR.mkdir(parents=True, exist_ok=True)
+    BACKUP_DIR.mkdir(parents=True, exist_ok=True)
 
 
 def connect() -> sqlite3.Connection:
     ensure_dirs()
-    conn = sqlite3.connect(DB_PATH)
+    conn = sqlite3.connect(DB_PATH, timeout=30)
     conn.row_factory = sqlite3.Row
+    conn.execute("PRAGMA busy_timeout = 30000")
     return conn
+
+
+def backup_database(batch_id: str) -> Path:
+    ensure_dirs()
+    backup_path = BACKUP_DIR / f"skip_loading_db_backup_{batch_id}.db"
+    with sqlite3.connect(DB_PATH, timeout=30) as source:
+        source.execute("PRAGMA busy_timeout = 30000")
+        with sqlite3.connect(backup_path) as target:
+            source.backup(target)
+    return backup_path
 
 
 def init_db() -> None:
@@ -76,6 +181,97 @@ def init_db() -> None:
         )
         conn.execute(
             "CREATE INDEX IF NOT EXISTS idx_requests_status ON requests(status)"
+        )
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS dag_entries (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                dag_id TEXT NOT NULL,
+                description TEXT NOT NULL,
+                schedule_interval TEXT NOT NULL,
+                event_date_table TEXT,
+                start_datetime TEXT NOT NULL,
+                end_date TEXT NOT NULL,
+                status TEXT NOT NULL,
+                email TEXT NOT NULL,
+                owner TEXT NOT NULL,
+                last_released_date TEXT,
+                gcp_project_id TEXT NOT NULL,
+                ad_group TEXT NOT NULL,
+                machine_type TEXT NOT NULL,
+                mount_bucket TEXT NOT NULL,
+                image_version TEXT NOT NULL,
+                request_type TEXT NOT NULL,
+                num_workers TEXT,
+                bucket_folder TEXT NOT NULL,
+                run_on_holiday TEXT NOT NULL,
+                vm_alive_days TEXT,
+                skip_run_base_completion_toke TEXT NOT NULL,
+                token_file_bucket TEXT,
+                token_file_path_in_bucket TEXT,
+                token_file_offset TEXT NOT NULL,
+                pega_night_batch_flag TEXT,
+                stop_successful_mail_ser TEXT,
+                pega_intra_batch_flag TEXT,
+                myfeed_reminder_flag TEXT,
+                previous_entry_id INTEGER,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            )
+            """
+        )
+        existing_dag_columns = {
+            row["name"] for row in conn.execute("PRAGMA table_info(dag_entries)").fetchall()
+        }
+        if "previous_entry_id" not in existing_dag_columns:
+            conn.execute("ALTER TABLE dag_entries ADD COLUMN previous_entry_id INTEGER")
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_dag_entries_dag_id ON dag_entries(dag_id)"
+        )
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS task_entries (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                dag_id TEXT NOT NULL,
+                task_id TEXT NOT NULL,
+                task_name TEXT NOT NULL,
+                shell_command TEXT NOT NULL,
+                dataproc_bucket TEXT,
+                main_file_run_on_dataproc TEXT,
+                main_python_args TEXT,
+                dependency_task TEXT,
+                file_wait_bucket TEXT NOT NULL,
+                file_wait TEXT,
+                filewait_time_out_in_secon TEXT NOT NULL,
+                sensor_task_name TEXT,
+                parent_dag TEXT,
+                parent_task TEXT,
+                marker_task_name TEXT,
+                child_dag TEXT,
+                child_task_id TEXT,
+                task_inactive_flag TEXT,
+                trigger_rule TEXT,
+                task_unique_key TEXT NOT NULL,
+                monthly_start_day TEXT,
+                monthly_end_day TEXT,
+                weekly_start_day TEXT,
+                weekly_end_day TEXT,
+                previous_entry_id INTEGER,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            )
+            """
+        )
+        existing_task_columns = {
+            row["name"] for row in conn.execute("PRAGMA table_info(task_entries)").fetchall()
+        }
+        if "previous_entry_id" not in existing_task_columns:
+            conn.execute("ALTER TABLE task_entries ADD COLUMN previous_entry_id INTEGER")
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_task_entries_unique_key ON task_entries(task_unique_key)"
+        )
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_task_entries_task_id ON task_entries(task_id)"
         )
 
 
@@ -320,6 +516,16 @@ def normalize_header(value: Any) -> str:
     return str(value or "").strip().lower().replace(" ", "_")
 
 
+def cell_text(value: Any) -> str:
+    if value is None:
+        return ""
+    if isinstance(value, datetime):
+        return value.isoformat(sep=" ", timespec="seconds")
+    if isinstance(value, date):
+        return value.isoformat()
+    return str(value).strip()
+
+
 def import_history_excel(file_bytes: bytes) -> dict[str, Any]:
     workbook = load_workbook(BytesIO(file_bytes), data_only=True)
     sheet = workbook.active
@@ -403,6 +609,805 @@ def import_history_excel(file_bytes: bytes) -> dict[str, Any]:
     }
 
 
+def normalize_optional_text(payload: dict[str, Any], key: str) -> str:
+    return str(payload.get(key, "")).strip()
+
+
+def missing_required_dag_fields(values: dict[str, str]) -> list[str]:
+    return [label for key, label in DAG_COLUMNS if key in DAG_REQUIRED_FIELDS and not values[key]]
+
+
+def dag_values_match(row: sqlite3.Row | None, values: dict[str, str]) -> bool:
+    if row is None:
+        return False
+    return all(str(row[key] or "") == values[key] for key, _label in DAG_COLUMNS)
+
+
+def create_dag_entry(payload: dict[str, Any]) -> dict[str, Any]:
+    values = {key: normalize_optional_text(payload, key) for key, _label in DAG_COLUMNS}
+    missing = missing_required_dag_fields(values)
+    if missing:
+        raise ValueError(f"Required DAG fields missing: {', '.join(missing)}")
+
+    now = datetime.now().isoformat(timespec="seconds")
+    keys = [key for key, _label in DAG_COLUMNS]
+    columns_sql = ", ".join(keys)
+    placeholders = ", ".join("?" for _ in keys)
+    with connect() as conn:
+        previous = latest_dag_entry(conn, values["dag_id"])
+        cursor = conn.execute(
+            f"""
+            INSERT INTO dag_entries (
+                {columns_sql}, previous_entry_id, created_at, updated_at
+            )
+            VALUES ({placeholders}, ?, ?, ?)
+            """,
+            (
+                *[values[key] for key in keys],
+                previous["id"] if previous else None,
+                now,
+                now,
+            ),
+        )
+        row = conn.execute(
+            "SELECT * FROM dag_entries WHERE id = ?", (cursor.lastrowid,)
+        ).fetchone()
+        return row_to_dict(row)
+
+
+def import_dag_excel(file_bytes: bytes) -> dict[str, Any]:
+    workbook = load_workbook(BytesIO(file_bytes), data_only=True)
+    sheet = workbook["DAG"] if "DAG" in workbook.sheetnames else workbook.active
+    rows = list(sheet.iter_rows(values_only=True))
+    if not rows:
+        raise ValueError("Excel is empty")
+
+    headers = {normalize_header(value): index for index, value in enumerate(rows[0])}
+
+    def cell(row: tuple[Any, ...], *names: str) -> Any:
+        for name in names:
+            index = headers.get(normalize_header(name))
+            if index is not None and index < len(row):
+                return row[index]
+        return ""
+
+    imported_ids: list[int] = []
+    skipped_blank_dag_id = 0
+    skipped_unchanged = 0
+    failed_rows: list[dict[str, Any]] = []
+
+    with connect() as conn:
+        for row_number, row in enumerate(rows[1:], start=2):
+            values = {
+                key: cell_text(cell(row, key, label))
+                for key, label in DAG_COLUMNS
+            }
+            if not values["dag_id"]:
+                skipped_blank_dag_id += 1
+                continue
+
+            missing = missing_required_dag_fields(values)
+            if missing:
+                failed_rows.append(
+                    {
+                        "row": row_number,
+                        "dag_id": values["dag_id"],
+                        "error": f"Missing required fields: {', '.join(missing)}",
+                    }
+                )
+                continue
+
+            previous = latest_dag_entry(conn, values["dag_id"])
+            if dag_values_match(previous, values):
+                skipped_unchanged += 1
+                continue
+
+            now = datetime.now().isoformat(timespec="seconds")
+            keys = [key for key, _label in DAG_COLUMNS]
+            columns_sql = ", ".join(keys)
+            placeholders = ", ".join("?" for _ in keys)
+            cursor = conn.execute(
+                f"""
+                INSERT INTO dag_entries (
+                    {columns_sql}, previous_entry_id, created_at, updated_at
+                )
+                VALUES ({placeholders}, ?, ?, ?)
+                """,
+                (
+                    *[values[key] for key in keys],
+                    previous["id"] if previous else None,
+                    now,
+                    now,
+                ),
+            )
+            imported_ids.append(cursor.lastrowid)
+
+    return {
+        "sheet": sheet.title,
+        "imported_count": len(imported_ids),
+        "skipped_blank_dag_id": skipped_blank_dag_id,
+        "skipped_unchanged": skipped_unchanged,
+        "failed_count": len(failed_rows),
+        "failed_rows": failed_rows[:10],
+        "imported_ids": imported_ids,
+    }
+
+
+def latest_dag_entry(conn: sqlite3.Connection, dag_id: str) -> sqlite3.Row | None:
+    return conn.execute(
+        """
+        SELECT *
+        FROM dag_entries
+        WHERE LOWER(dag_id) = LOWER(?)
+        ORDER BY id DESC
+        LIMIT 1
+        """,
+        (dag_id.strip(),),
+    ).fetchone()
+
+
+def normalized_page(value: str | None) -> int:
+    try:
+        page = int(value or "1")
+    except ValueError:
+        return 1
+    return max(page, 1)
+
+
+def paginated_payload(rows: list[sqlite3.Row], total: int, page: int, page_size: int) -> dict[str, Any]:
+    total_pages = max(1, (total + page_size - 1) // page_size)
+    return {
+        "rows": [row_to_dict(row) for row in rows],
+        "total": total,
+        "page": min(page, total_pages),
+        "page_size": page_size,
+        "total_pages": total_pages,
+    }
+
+
+def list_dag_entries(dag_id: str | None = None, page: int = 1, page_size: int = 3) -> dict[str, Any]:
+    count_clauses: list[str] = []
+    row_clauses: list[str] = []
+    params: list[Any] = []
+    if dag_id:
+        count_clauses.append("LOWER(dag_id) LIKE LOWER(?)")
+        row_clauses.append("LOWER(d.dag_id) LIKE LOWER(?)")
+        params.append(f"%{dag_id.strip()}%")
+
+    count_where = f"WHERE {' AND '.join(count_clauses)}" if count_clauses else ""
+    row_where = f"WHERE {' AND '.join(row_clauses)}" if row_clauses else ""
+    with connect() as conn:
+        total = conn.execute(
+            f"""
+            SELECT COUNT(*) AS count
+            FROM (
+                SELECT LOWER(dag_id) AS dag_key
+                FROM dag_entries
+                {count_where}
+                GROUP BY LOWER(dag_id)
+            ) unique_dags
+            """,
+            params,
+        ).fetchone()["count"]
+        total_pages = max(1, (total + page_size - 1) // page_size)
+        page = min(max(page, 1), total_pages)
+        offset = (page - 1) * page_size
+        rows = conn.execute(
+            f"""
+            SELECT d.*
+            FROM dag_entries d
+            JOIN (
+                SELECT LOWER(dag_id) AS dag_key, MAX(id) AS max_id
+                FROM dag_entries
+                GROUP BY LOWER(dag_id)
+            ) latest ON latest.max_id = d.id
+            {row_where}
+            ORDER BY d.created_at DESC, d.id DESC
+            LIMIT ? OFFSET ?
+            """,
+            (*params, page_size, offset),
+        ).fetchall()
+        return paginated_payload(rows, total, page, page_size)
+
+
+def get_dag_history(dag_id: str, page: int = 1, page_size: int = 3) -> dict[str, Any]:
+    dag_id = require_text({"dag_id": dag_id}, "dag_id", "dag_id")
+    with connect() as conn:
+        latest = latest_dag_entry(conn, dag_id)
+        total = conn.execute(
+            """
+            SELECT COUNT(*) AS count
+            FROM dag_entries
+            WHERE LOWER(dag_id) = LOWER(?)
+            """,
+            (dag_id,),
+        ).fetchone()["count"]
+        total_pages = max(1, (total + page_size - 1) // page_size)
+        page = min(max(page, 1), total_pages)
+        offset = (page - 1) * page_size
+        history = conn.execute(
+            """
+            SELECT *
+            FROM dag_entries
+            WHERE LOWER(dag_id) = LOWER(?)
+            ORDER BY id DESC
+            LIMIT ? OFFSET ?
+            """,
+            (dag_id, page_size, offset),
+        ).fetchall()
+        history_items = [dag_history_row_to_dict(conn, row) for row in history]
+        return {
+            "dag_id": dag_id,
+            "current_record": row_to_dict(latest) if latest else None,
+            "history": history_items,
+            "total": total,
+            "page": page,
+            "page_size": page_size,
+            "total_pages": total_pages,
+        }
+
+
+def previous_dag_entry(conn: sqlite3.Connection, row: sqlite3.Row) -> sqlite3.Row | None:
+    previous_id = row["previous_entry_id"] if "previous_entry_id" in row.keys() else None
+    if previous_id:
+        previous = conn.execute(
+            "SELECT * FROM dag_entries WHERE id = ?",
+            (previous_id,),
+        ).fetchone()
+        if previous:
+            return previous
+    return conn.execute(
+        """
+        SELECT *
+        FROM dag_entries
+        WHERE LOWER(dag_id) = LOWER(?)
+          AND id < ?
+        ORDER BY id DESC
+        LIMIT 1
+        """,
+        (row["dag_id"], row["id"]),
+    ).fetchone()
+
+
+def dag_history_row_to_dict(conn: sqlite3.Connection, row: sqlite3.Row) -> dict[str, Any]:
+    item = row_to_dict(row)
+    previous = previous_dag_entry(conn, row)
+    if previous is None:
+        item["changes"] = [
+            {
+                "field": "record",
+                "label": "Record",
+                "old": "",
+                "new": "Created",
+            }
+        ]
+        return item
+
+    changes: list[dict[str, str]] = []
+    for key, label in DAG_COLUMNS:
+        old = str(previous[key] or "")
+        new = str(row[key] or "")
+        if old != new:
+            changes.append(
+                {
+                    "field": key,
+                    "label": label,
+                    "old": old,
+                    "new": new,
+                }
+            )
+    item["changes"] = changes
+    return item
+
+
+def export_dag_excel() -> dict[str, Any]:
+    batch_id = datetime.now().strftime("dag-export-%Y%m%d-%H%M%S")
+    output_path = EXPORT_DIR / f"dag_scheduler_{batch_id}.xlsx"
+
+    with connect() as conn:
+        rows = conn.execute(
+            """
+            SELECT d.*
+            FROM dag_entries d
+            JOIN (
+                SELECT LOWER(dag_id) AS dag_key, MAX(id) AS max_id
+                FROM dag_entries
+                GROUP BY LOWER(dag_id)
+            ) latest ON latest.max_id = d.id
+            ORDER BY d.dag_id
+            """
+        ).fetchall()
+
+    workbook = Workbook()
+    sheet = workbook.active
+    sheet.title = "DAG"
+    headers = [label for _key, label in DAG_COLUMNS]
+    sheet.append(headers)
+    for cell in sheet[1]:
+        cell.font = Font(bold=True)
+        cell.fill = PatternFill("solid", fgColor="D9EAF7")
+
+    for row in rows:
+        sheet.append([row[key] or "" for key, _label in DAG_COLUMNS])
+
+    for index, (_key, label) in enumerate(DAG_COLUMNS, start=1):
+        width = min(max(len(label) + 4, 14), 34)
+        sheet.column_dimensions[sheet.cell(row=1, column=index).column_letter].width = width
+
+    if rows:
+        table_ref = f"A1:{sheet.cell(row=len(rows) + 1, column=len(headers)).coordinate}"
+        table = Table(displayName="DAGTable", ref=table_ref)
+        table.tableStyleInfo = TableStyleInfo(
+            name="TableStyleMedium2",
+            showFirstColumn=False,
+            showLastColumn=False,
+            showRowStripes=True,
+            showColumnStripes=False,
+        )
+        sheet.add_table(table)
+
+    workbook.save(output_path)
+    return {
+        "batch_id": batch_id,
+        "file": str(output_path),
+        "record_count": len(rows),
+    }
+
+
+def missing_required_task_fields(values: dict[str, str]) -> list[str]:
+    return [label for key, label in TASK_COLUMNS if key in TASK_REQUIRED_FIELDS and not values[key]]
+
+
+def calculated_task_unique_key(values: dict[str, str]) -> str:
+    existing = values.get("task_unique_key", "").strip()
+    if existing:
+        return existing
+    dag_id = values.get("dag_id", "").strip()
+    task_id = values.get("task_id", "").strip()
+    return f"{dag_id}||{task_id}" if dag_id or task_id else ""
+
+
+def task_values_match(row: sqlite3.Row | None, values: dict[str, str]) -> bool:
+    if row is None:
+        return False
+    return all(str(row[key] or "") == values[key] for key, _label in TASK_COLUMNS)
+
+
+def latest_task_entry(conn: sqlite3.Connection, task_id: str) -> sqlite3.Row | None:
+    return conn.execute(
+        """
+        SELECT *
+        FROM task_entries
+        WHERE LOWER(task_id) = LOWER(?)
+        ORDER BY id DESC
+        LIMIT 1
+        """,
+        (task_id.strip(),),
+    ).fetchone()
+
+
+def create_task_entry(payload: dict[str, Any]) -> dict[str, Any]:
+    values = {key: normalize_optional_text(payload, key) for key, _label in TASK_COLUMNS}
+    missing = missing_required_task_fields(values)
+    if missing:
+        raise ValueError(f"Required TASKS fields missing: {', '.join(missing)}")
+    values["task_unique_key"] = calculated_task_unique_key(values)
+
+    now = datetime.now().isoformat(timespec="seconds")
+    keys = [key for key, _label in TASK_COLUMNS]
+    columns_sql = ", ".join(keys)
+    placeholders = ", ".join("?" for _ in keys)
+    with connect() as conn:
+        previous = latest_task_entry(conn, values["task_id"])
+        cursor = conn.execute(
+            f"""
+            INSERT INTO task_entries (
+                {columns_sql}, previous_entry_id, created_at, updated_at
+            )
+            VALUES ({placeholders}, ?, ?, ?)
+            """,
+            (
+                *[values[key] for key in keys],
+                previous["id"] if previous else None,
+                now,
+                now,
+            ),
+        )
+        row = conn.execute(
+            "SELECT * FROM task_entries WHERE id = ?", (cursor.lastrowid,)
+        ).fetchone()
+        return row_to_dict(row)
+
+
+def import_tasks_excel(file_bytes: bytes) -> dict[str, Any]:
+    workbook = load_workbook(BytesIO(file_bytes), data_only=True)
+    sheet = workbook["TASKS"] if "TASKS" in workbook.sheetnames else workbook.active
+    rows = list(sheet.iter_rows(values_only=True))
+    if not rows:
+        raise ValueError("Excel is empty")
+
+    headers = {normalize_header(value): index for index, value in enumerate(rows[0])}
+
+    aliases = {
+        "sensor_task_name": ("sensor_task_name", "sensor_task_na"),
+        "parent_dag": ("parent_dag", "parent_dag_"),
+        "parent_task": ("parent_task", "parent_task_"),
+        "marker_task_name": ("marker_task_name", "marker_task_nar"),
+        "child_dag": ("child_dag", "child_dag_"),
+        "weekly_start_day": ("weekly_start_day", "weekly_start_da"),
+    }
+
+    def cell(row: tuple[Any, ...], *names: str) -> Any:
+        for name in names:
+            index = headers.get(normalize_header(name))
+            if index is not None and index < len(row):
+                return row[index]
+        return ""
+
+    imported_ids: list[int] = []
+    skipped_blank_task = 0
+    skipped_unchanged = 0
+    failed_rows: list[dict[str, Any]] = []
+
+    with connect() as conn:
+        for row_number, row in enumerate(rows[1:], start=2):
+            values = {
+                key: cell_text(cell(row, key, label, *aliases.get(key, ())))
+                for key, label in TASK_COLUMNS
+            }
+            if not values["dag_id"] and not values["task_id"]:
+                skipped_blank_task += 1
+                continue
+
+            missing = missing_required_task_fields(values)
+            if missing:
+                failed_rows.append(
+                    {
+                        "row": row_number,
+                        "task_id": values["task_id"],
+                        "error": f"Missing required fields: {', '.join(missing)}",
+                    }
+                )
+                continue
+            values["task_unique_key"] = calculated_task_unique_key(values)
+
+            previous = latest_task_entry(conn, values["task_id"])
+            if task_values_match(previous, values):
+                skipped_unchanged += 1
+                continue
+
+            now = datetime.now().isoformat(timespec="seconds")
+            keys = [key for key, _label in TASK_COLUMNS]
+            columns_sql = ", ".join(keys)
+            placeholders = ", ".join("?" for _ in keys)
+            cursor = conn.execute(
+                f"""
+                INSERT INTO task_entries (
+                    {columns_sql}, previous_entry_id, created_at, updated_at
+                )
+                VALUES ({placeholders}, ?, ?, ?)
+                """,
+                (
+                    *[values[key] for key in keys],
+                    previous["id"] if previous else None,
+                    now,
+                    now,
+                ),
+            )
+            imported_ids.append(cursor.lastrowid)
+
+    return {
+        "sheet": sheet.title,
+        "imported_count": len(imported_ids),
+        "skipped_blank_task": skipped_blank_task,
+        "skipped_unchanged": skipped_unchanged,
+        "failed_count": len(failed_rows),
+        "failed_rows": failed_rows[:10],
+        "imported_ids": imported_ids,
+    }
+
+
+def list_task_entries(task_id: str | None = None, page: int = 1, page_size: int = 3) -> dict[str, Any]:
+    count_clauses: list[str] = []
+    row_clauses: list[str] = []
+    params: list[Any] = []
+    if task_id:
+        count_clauses.append("LOWER(task_id) LIKE LOWER(?)")
+        row_clauses.append("LOWER(t.task_id) LIKE LOWER(?)")
+        params.append(f"%{task_id.strip()}%")
+
+    count_where = f"WHERE {' AND '.join(count_clauses)}" if count_clauses else ""
+    row_where = f"WHERE {' AND '.join(row_clauses)}" if row_clauses else ""
+    with connect() as conn:
+        total = conn.execute(
+            f"""
+            SELECT COUNT(*) AS count
+            FROM (
+                SELECT LOWER(task_id) AS task_key
+                FROM task_entries
+                {count_where}
+                GROUP BY LOWER(task_id)
+            ) unique_tasks
+            """,
+            params,
+        ).fetchone()["count"]
+        total_pages = max(1, (total + page_size - 1) // page_size)
+        page = min(max(page, 1), total_pages)
+        offset = (page - 1) * page_size
+        rows = conn.execute(
+            f"""
+            SELECT t.*
+            FROM task_entries t
+            JOIN (
+                SELECT LOWER(task_id) AS task_key, MAX(id) AS max_id
+                FROM task_entries
+                GROUP BY LOWER(task_id)
+            ) latest ON latest.max_id = t.id
+            {row_where}
+            ORDER BY t.created_at DESC, t.id DESC
+            LIMIT ? OFFSET ?
+            """,
+            (*params, page_size, offset),
+        ).fetchall()
+        return paginated_payload(rows, total, page, page_size)
+
+
+def get_task_history(task_id: str, page: int = 1, page_size: int = 3) -> dict[str, Any]:
+    task_id = require_text({"task_id": task_id}, "task_id", "task_id")
+    with connect() as conn:
+        latest = latest_task_entry(conn, task_id)
+        total = conn.execute(
+            """
+            SELECT COUNT(*) AS count
+            FROM task_entries
+            WHERE LOWER(task_id) = LOWER(?)
+            """,
+            (task_id,),
+        ).fetchone()["count"]
+        total_pages = max(1, (total + page_size - 1) // page_size)
+        page = min(max(page, 1), total_pages)
+        offset = (page - 1) * page_size
+        history = conn.execute(
+            """
+            SELECT *
+            FROM task_entries
+            WHERE LOWER(task_id) = LOWER(?)
+            ORDER BY id DESC
+            LIMIT ? OFFSET ?
+            """,
+            (task_id, page_size, offset),
+        ).fetchall()
+        history_items = [task_history_row_to_dict(conn, row) for row in history]
+        return {
+            "task_id": task_id,
+            "current_record": row_to_dict(latest) if latest else None,
+            "history": history_items,
+            "total": total,
+            "page": page,
+            "page_size": page_size,
+            "total_pages": total_pages,
+        }
+
+
+def previous_task_entry(conn: sqlite3.Connection, row: sqlite3.Row) -> sqlite3.Row | None:
+    previous_id = row["previous_entry_id"] if "previous_entry_id" in row.keys() else None
+    if previous_id:
+        previous = conn.execute(
+            "SELECT * FROM task_entries WHERE id = ?",
+            (previous_id,),
+        ).fetchone()
+        if previous:
+            return previous
+    return conn.execute(
+        """
+        SELECT *
+        FROM task_entries
+        WHERE LOWER(task_id) = LOWER(?)
+          AND id < ?
+        ORDER BY id DESC
+        LIMIT 1
+        """,
+        (row["task_id"], row["id"]),
+    ).fetchone()
+
+
+def task_history_row_to_dict(conn: sqlite3.Connection, row: sqlite3.Row) -> dict[str, Any]:
+    item = row_to_dict(row)
+    previous = previous_task_entry(conn, row)
+    if previous is None:
+        item["changes"] = [
+            {
+                "field": "record",
+                "label": "Record",
+                "old": "",
+                "new": "Created",
+            }
+        ]
+        return item
+
+    changes: list[dict[str, str]] = []
+    for key, label in TASK_COLUMNS:
+        old = str(previous[key] or "")
+        new = str(row[key] or "")
+        if old != new:
+            changes.append(
+                {
+                    "field": key,
+                    "label": label,
+                    "old": old,
+                    "new": new,
+                }
+            )
+    item["changes"] = changes
+    return item
+
+
+def export_tasks_excel() -> dict[str, Any]:
+    batch_id = datetime.now().strftime("tasks-export-%Y%m%d-%H%M%S")
+    output_path = EXPORT_DIR / f"tasks_{batch_id}.xlsx"
+
+    with connect() as conn:
+        rows = conn.execute(
+            """
+            SELECT t.*
+            FROM task_entries t
+            JOIN (
+                SELECT LOWER(task_id) AS task_key, MAX(id) AS max_id
+                FROM task_entries
+                GROUP BY LOWER(task_id)
+            ) latest ON latest.max_id = t.id
+            ORDER BY t.task_id
+            """
+        ).fetchall()
+
+    workbook = Workbook()
+    sheet = workbook.active
+    sheet.title = "TASKS"
+    headers = [label for _key, label in TASK_COLUMNS]
+    sheet.append(headers)
+    for cell in sheet[1]:
+        cell.font = Font(bold=True)
+        cell.fill = PatternFill("solid", fgColor="D9EAF7")
+
+    for row in rows:
+        sheet.append([row[key] or "" for key, _label in TASK_COLUMNS])
+
+    for index, (_key, label) in enumerate(TASK_COLUMNS, start=1):
+        width = min(max(len(label) + 4, 14), 40)
+        sheet.column_dimensions[sheet.cell(row=1, column=index).column_letter].width = width
+
+    if rows:
+        table_ref = f"A1:{sheet.cell(row=len(rows) + 1, column=len(headers)).coordinate}"
+        table = Table(displayName="TasksTable", ref=table_ref)
+        table.tableStyleInfo = TableStyleInfo(
+            name="TableStyleMedium2",
+            showFirstColumn=False,
+            showLastColumn=False,
+            showRowStripes=True,
+            showColumnStripes=False,
+        )
+        sheet.add_table(table)
+
+    workbook.save(output_path)
+    return {
+        "batch_id": batch_id,
+        "file": str(output_path),
+        "record_count": len(rows),
+    }
+
+
+def run_nums_from_task_id(task_id: str) -> list[str]:
+    return list(dict.fromkeys(re.findall(r"RDP(\d+)", task_id or "", flags=re.IGNORECASE)))
+
+
+def task_json_summary(task_row: sqlite3.Row, latest_dags: dict[str, sqlite3.Row]) -> dict[str, Any]:
+    dag_row = latest_dags.get(str(task_row["dag_id"] or "").lower())
+    latest_dag = None
+    if dag_row:
+        latest_dag = {
+            "dag_id": dag_row["dag_id"],
+            "start_datetime": dag_row["start_datetime"],
+            "end_date": dag_row["end_date"],
+            "VM_alive_days": dag_row["vm_alive_days"],
+            "latest_dag_version_id": dag_row["id"],
+        }
+    return {
+        "task_id": task_row["task_id"],
+        "dag_id": task_row["dag_id"],
+        "task_inactive_flag": task_row["task_inactive_flag"],
+        "latest_task_version_id": task_row["id"],
+        "latest_dag": latest_dag,
+    }
+
+
+def export_database_json() -> dict[str, Any]:
+    batch_id = datetime.now().strftime("db-json-%Y%m%d-%H%M%S")
+    output_path = EXPORT_DIR / f"use_case_control_{batch_id}.json"
+
+    with connect() as conn:
+        skip_rows = effective_export_rows(conn)
+        task_rows = conn.execute(
+            """
+            SELECT t.*
+            FROM task_entries t
+            JOIN (
+                SELECT LOWER(task_id) AS task_key, MAX(id) AS max_id
+                FROM task_entries
+                GROUP BY LOWER(task_id)
+            ) latest ON latest.max_id = t.id
+            ORDER BY t.task_id
+            """
+        ).fetchall()
+        dag_rows = conn.execute(
+            """
+            SELECT d.*
+            FROM dag_entries d
+            JOIN (
+                SELECT LOWER(dag_id) AS dag_key, MAX(id) AS max_id
+                FROM dag_entries
+                GROUP BY LOWER(dag_id)
+            ) latest ON latest.max_id = d.id
+            """
+        ).fetchall()
+
+    latest_dags = {str(row["dag_id"]).lower(): row for row in dag_rows}
+    data: dict[str, Any] = {}
+    matched_task_count = 0
+    skip_run_nums = {str(row["run_num"]) for row in skip_rows}
+    for skip_row in skip_rows:
+        run_num = str(skip_row["run_num"])
+        matched_tasks = []
+        for task_row in task_rows:
+            task_id = str(task_row["task_id"] or "")
+            if run_num not in task_id:
+                continue
+            matched_tasks.append(task_json_summary(task_row, latest_dags))
+
+        matched_task_count += len(matched_tasks)
+        data[run_num] = {
+            "skip_loading_latest_effective": {
+                "action": skip_row["action"],
+                "end_date": skip_row["end_date"],
+                "status": skip_row["status"],
+            },
+            "matched_tasks": matched_tasks,
+        }
+
+    task_only_data: dict[str, Any] = {}
+    for task_row in task_rows:
+        task_id = str(task_row["task_id"] or "")
+        for run_num in run_nums_from_task_id(task_id):
+            if run_num in skip_run_nums:
+                continue
+            task_only_data.setdefault(
+                run_num,
+                {
+                    "skip_loading_latest_effective": None,
+                    "matched_tasks": [],
+                },
+            )["matched_tasks"].append(task_json_summary(task_row, latest_dags))
+
+    payload = {
+        "generated_at": datetime.now().isoformat(timespec="seconds"),
+        "today": today().isoformat(),
+        "run_nums": list(data.keys()),
+        "task_only_run_nums": list(task_only_data.keys()),
+        "data": data,
+        "task_only_data": task_only_data,
+    }
+    output_path.write_text(
+        json.dumps(payload, ensure_ascii=False, indent=2),
+        encoding="utf-8",
+    )
+    return {
+        "batch_id": batch_id,
+        "file": str(output_path),
+        "run_num_count": len(data),
+        "task_only_run_num_count": len(task_only_data),
+        "matched_task_count": matched_task_count,
+    }
+
+
 def decide_request(request_id: int, payload: dict[str, Any]) -> dict[str, Any]:
     decision = require_text(payload, "decision", "Decision").lower()
     if decision not in {"approve", "reject"}:
@@ -454,7 +1459,7 @@ def effective_export_rows(conn: sqlite3.Connection) -> list[sqlite3.Row]:
             WHERE status IN ('approved', 'exported')
             GROUP BY run_num
         ) latest ON latest.max_id = r.id
-        ORDER BY CAST(r.run_num AS INTEGER), r.run_num
+        ORDER BY r.created_at DESC, r.id DESC
         """,
     ).fetchall()
     return rows
@@ -549,9 +1554,12 @@ def export_excel() -> dict[str, Any]:
                 (batch_id, now, *row_ids),
             )
 
+    backup_path = backup_database(batch_id)
+
     return {
         "batch_id": batch_id,
         "file": str(output_path),
+        "backup_file": str(backup_path),
         "record_count": len(rows),
     }
 
@@ -580,6 +1588,20 @@ def api_response(handler: SimpleHTTPRequestHandler, status: int, payload: Any) -
     handler.send_header("Content-Length", str(len(body)))
     handler.end_headers()
     handler.wfile.write(body)
+
+
+def is_database_busy_error(exc: Exception) -> bool:
+    if not isinstance(exc, sqlite3.Error):
+        return False
+    message = str(exc).lower()
+    return "database is locked" in message or "database is busy" in message
+
+
+def api_error_response(handler: SimpleHTTPRequestHandler, exc: Exception) -> None:
+    if is_database_busy_error(exc):
+        api_response(handler, 503, {"error": DATABASE_BUSY_MESSAGE})
+        return
+    api_response(handler, 400, {"error": str(exc)})
 
 
 def read_json(handler: SimpleHTTPRequestHandler) -> dict[str, Any]:
@@ -649,8 +1671,48 @@ class AppHandler(SimpleHTTPRequestHandler):
                 with connect() as conn:
                     rows = effective_export_rows(conn)
                     api_response(self, 200, [row_to_dict(row) for row in rows])
+            elif parsed.path == "/api/dag-entries":
+                query = parse_qs(parsed.query)
+                api_response(
+                    self,
+                    200,
+                    list_dag_entries(
+                        dag_id=query.get("dag_id", [None])[0],
+                        page=normalized_page(query.get("page", [None])[0]),
+                    ),
+                )
+            elif parsed.path == "/api/dag-history":
+                query = parse_qs(parsed.query)
+                api_response(
+                    self,
+                    200,
+                    get_dag_history(
+                        query.get("dag_id", [""])[0],
+                        page=normalized_page(query.get("page", [None])[0]),
+                    ),
+                )
+            elif parsed.path == "/api/task-entries":
+                query = parse_qs(parsed.query)
+                api_response(
+                    self,
+                    200,
+                    list_task_entries(
+                        task_id=query.get("task_id", query.get("task_unique_key", [None]))[0],
+                        page=normalized_page(query.get("page", [None])[0]),
+                    ),
+                )
+            elif parsed.path == "/api/task-history":
+                query = parse_qs(parsed.query)
+                api_response(
+                    self,
+                    200,
+                    get_task_history(
+                        query.get("task_id", query.get("task_unique_key", [""]))[0],
+                        page=normalized_page(query.get("page", [None])[0]),
+                    ),
+                )
             elif parsed.path.startswith("/exports/"):
-                self.serve_file(BASE_DIR / parsed.path.lstrip("/"))
+                self.serve_file(EXPORT_DIR / Path(parsed.path).name)
             elif parsed.path == "/" or parsed.path.startswith("/static/"):
                 if parsed.path == "/":
                     path = STATIC_DIR / "index.html"
@@ -660,7 +1722,7 @@ class AppHandler(SimpleHTTPRequestHandler):
             else:
                 api_response(self, 404, {"error": "Not found"})
         except Exception as exc:
-            api_response(self, 400, {"error": str(exc)})
+            api_error_response(self, exc)
 
     def do_POST(self) -> None:
         parsed = urlparse(self.path)
@@ -669,18 +1731,36 @@ class AppHandler(SimpleHTTPRequestHandler):
                 file_bytes = read_multipart_file(self, "file")
                 api_response(self, 200, import_history_excel(file_bytes))
                 return
+            if parsed.path == "/api/dag-import":
+                file_bytes = read_multipart_file(self, "file")
+                api_response(self, 200, import_dag_excel(file_bytes))
+                return
+            if parsed.path == "/api/tasks-import":
+                file_bytes = read_multipart_file(self, "file")
+                api_response(self, 200, import_tasks_excel(file_bytes))
+                return
             payload = read_json(self)
             if parsed.path == "/api/requests":
                 api_response(self, 201, create_request(payload))
+            elif parsed.path == "/api/dag-entries":
+                api_response(self, 201, create_dag_entry(payload))
+            elif parsed.path == "/api/task-entries":
+                api_response(self, 201, create_task_entry(payload))
             elif parsed.path.startswith("/api/requests/") and parsed.path.endswith("/decision"):
                 request_id = int(parsed.path.split("/")[3])
                 api_response(self, 200, decide_request(request_id, payload))
             elif parsed.path == "/api/export":
                 api_response(self, 200, export_excel())
+            elif parsed.path == "/api/dag-export":
+                api_response(self, 200, export_dag_excel())
+            elif parsed.path == "/api/tasks-export":
+                api_response(self, 200, export_tasks_excel())
+            elif parsed.path == "/api/export-json":
+                api_response(self, 200, export_database_json())
             else:
                 api_response(self, 404, {"error": "Not found"})
         except Exception as exc:
-            api_response(self, 400, {"error": str(exc)})
+            api_error_response(self, exc)
 
     def serve_file(self, path: Path) -> None:
         if not path.exists() or not path.is_file():

@@ -30,6 +30,10 @@ Internal MVP for replacing direct Excel edits with a small request interface.
 - Each Day-end Export gets one batch id in the format `export-YYYYMMDD-HHMMSS`.
 - A request's `Export Batch` stores the first batch where that approved record was included. Daily full-picture exports do not overwrite that first export batch.
 
+## Docs
+
+- [Use Case Running Status](docs/use-case-running-status.md): explains how to decide whether a use case is still running from Skip Loading, TASKS, DAG Scheduler, and `VM_alive_days`.
+
 ## Run Locally
 
 Recommended on Windows:

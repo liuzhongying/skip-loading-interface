@@ -4,9 +4,47 @@ const state = {
   exportFilter: "ALL",
   exportPage: 1,
   exportPageSize: 10,
+  exportTotalPages: 1,
+  activeDagId: "",
+  dagPage: 1,
+  dagTotalPages: 1,
+  dagHistoryPage: 1,
+  dagHistoryTotalPages: 1,
+  activeTaskKey: "",
+  taskPage: 1,
+  taskTotalPages: 1,
+  taskHistoryPage: 1,
+  taskHistoryTotalPages: 1,
 };
 
 const $ = (selector) => document.querySelector(selector);
+
+const TASK_FIELDS = [
+  "dag_id",
+  "task_id",
+  "task_name",
+  "shell_command",
+  "dataproc_bucket",
+  "main_file_run_on_dataproc",
+  "main_python_args",
+  "dependency_task",
+  "file_wait_bucket",
+  "file_wait",
+  "filewait_time_out_in_secon",
+  "sensor_task_name",
+  "parent_dag",
+  "parent_task",
+  "marker_task_name",
+  "child_dag",
+  "child_task_id",
+  "task_inactive_flag",
+  "trigger_rule",
+  "task_unique_key",
+  "monthly_start_day",
+  "monthly_end_day",
+  "weekly_start_day",
+  "weekly_end_day",
+];
 
 async function api(path, options = {}) {
   const response = await fetch(path, {
@@ -36,6 +74,19 @@ function escapeHtml(value) {
 function formatDateTime(value) {
   if (!value) return "";
   return String(value).replace("T", " ");
+}
+
+function calculatedTaskUniqueKey(dagId, taskId) {
+  const left = String(dagId || "").trim();
+  const right = String(taskId || "").trim();
+  return left || right ? `${left}||${right}` : "";
+}
+
+function refreshTaskUniqueKey() {
+  const form = $("#taskForm");
+  if (!form.task_unique_key.value.trim()) {
+    form.task_unique_key.value = calculatedTaskUniqueKey(form.dag_id.value, form.task_id.value);
+  }
 }
 
 function setDefaultDates() {
@@ -115,6 +166,316 @@ async function loadExportPreview() {
   renderExportPreview();
 }
 
+async function loadDagEntries() {
+  const dagId = $("#dagFilter").value.trim();
+  const query = new URLSearchParams();
+  if (dagId) query.set("dag_id", dagId);
+  query.set("page", state.dagPage);
+  const rows = await api(`/api/dag-entries?${query.toString()}`);
+  state.dagPage = rows.page || 1;
+  state.dagTotalPages = rows.total_pages || 1;
+  $("#dagPageLabel").textContent = `Page ${state.dagPage} of ${state.dagTotalPages} (${rows.total || 0} DAGs)`;
+  $("#dagPageInput").value = state.dagPage;
+  $("#dagPageInput").max = state.dagTotalPages;
+  $("#dagPrevPage").disabled = state.dagPage <= 1;
+  $("#dagNextPage").disabled = state.dagPage >= state.dagTotalPages;
+  $("#dagBody").innerHTML =
+    rows.rows
+      .map(
+        (row) => `
+          <tr>
+            <td>${row.id}</td>
+            <td>${escapeHtml(formatDateTime(row.created_at))}</td>
+            <td>${escapeHtml(row.dag_id)}</td>
+            <td>${escapeHtml(row.description)}</td>
+            <td>${escapeHtml(row.schedule_interval)}</td>
+            <td>${escapeHtml(row.start_datetime)}</td>
+            <td>${escapeHtml(row.end_date)}</td>
+            <td>${escapeHtml(row.status)}</td>
+            <td>${escapeHtml(row.owner)}</td>
+            <td>${escapeHtml(row.request_type)}</td>
+            <td>${escapeHtml(row.run_on_holiday)}</td>
+          </tr>
+        `
+      )
+      .join("") || `<tr><td colspan="11">No DAG records.</td></tr>`;
+}
+
+function fillDagForm(row) {
+  const form = $("#dagForm");
+  [
+    "dag_id",
+    "description",
+    "schedule_interval",
+    "event_date_table",
+    "start_datetime",
+    "end_date",
+    "status",
+    "email",
+    "owner",
+    "last_released_date",
+    "gcp_project_id",
+    "ad_group",
+    "machine_type",
+    "mount_bucket",
+    "image_version",
+    "request_type",
+    "num_workers",
+    "bucket_folder",
+    "run_on_holiday",
+    "vm_alive_days",
+    "skip_run_base_completion_toke",
+    "token_file_bucket",
+    "token_file_path_in_bucket",
+    "token_file_offset",
+    "pega_night_batch_flag",
+    "stop_successful_mail_ser",
+    "pega_intra_batch_flag",
+    "myfeed_reminder_flag",
+  ].forEach((key) => {
+    if (form.elements[key]) {
+      form.elements[key].value = row?.[key] ?? "";
+    }
+  });
+}
+
+function renderDagHistory(data) {
+  const rows = data.history || [];
+  state.dagHistoryPage = data.page || 1;
+  state.dagHistoryTotalPages = data.total_pages || 1;
+  $("#dagHistoryLabel").textContent = rows.length
+    ? `${data.dag_id}: ${data.total || 0} version(s), newest first.`
+    : `${data.dag_id}: no history found.`;
+  $("#dagHistoryPageLabel").textContent = `Page ${state.dagHistoryPage} of ${state.dagHistoryTotalPages}`;
+  $("#dagHistoryPageInput").value = state.dagHistoryPage;
+  $("#dagHistoryPageInput").max = state.dagHistoryTotalPages;
+  $("#dagHistoryPrevPage").disabled = state.dagHistoryPage <= 1;
+  $("#dagHistoryNextPage").disabled = state.dagHistoryPage >= state.dagHistoryTotalPages;
+  $("#dagHistoryBody").innerHTML =
+    rows
+      .map(
+        (row) => `
+          <tr>
+            <td>${row.id}</td>
+            <td>${escapeHtml(formatDateTime(row.created_at))}</td>
+            <td>${escapeHtml(row.previous_entry_id || "")}</td>
+            <td>${escapeHtml(row.dag_id)}</td>
+            <td>${escapeHtml(row.description)}</td>
+            <td>${escapeHtml(row.schedule_interval)}</td>
+            <td>${escapeHtml(row.start_datetime)}</td>
+            <td>${escapeHtml(row.end_date)}</td>
+            <td>${escapeHtml(row.status)}</td>
+            <td>${escapeHtml(row.owner)}</td>
+            <td>${escapeHtml(row.request_type)}</td>
+            <td>${escapeHtml(row.run_on_holiday)}</td>
+            <td>${formatDagChanges(row.changes)}</td>
+          </tr>
+        `
+      )
+      .join("") || `<tr><td colspan="13">No history for this dag_id.</td></tr>`;
+}
+
+function formatDagChanges(changes) {
+  if (!changes || !changes.length) {
+    return `<span class="muted-text">No field changes</span>`;
+  }
+  return `
+    <ul class="change-list">
+      ${changes
+        .map(
+          (change) => `
+            <li>
+              <strong>${escapeHtml(change.label || change.field)}</strong>:
+              <span>${escapeHtml(change.old || "(blank)")}</span>
+              <span class="change-arrow">to</span>
+              <span>${escapeHtml(change.new || "(blank)")}</span>
+            </li>
+          `
+        )
+        .join("")}
+    </ul>
+  `;
+}
+
+async function loadDagForEdit() {
+  const dagId = $("#dagLookupId").value.trim();
+  if (!dagId) {
+    clearDagHistory();
+    return;
+  }
+  try {
+    const query = new URLSearchParams({ dag_id: dagId, page: state.dagHistoryPage });
+    const data = await api(`/api/dag-history?${query.toString()}`);
+    state.activeDagId = data.dag_id;
+    if (data.current_record) {
+      fillDagForm(data.current_record);
+      $("#dagMessage").textContent = `Loaded latest version #${data.current_record.id}.`;
+      $("#dagMessage").className = "message ok";
+    } else {
+      $("#dagMessage").textContent = "No existing DAG record. You can create a new one.";
+      $("#dagMessage").className = "message";
+    }
+    renderDagHistory(data);
+  } catch (error) {
+    $("#dagMessage").textContent = error.message;
+    $("#dagMessage").className = "message error";
+  }
+}
+
+function clearDagHistory() {
+  state.activeDagId = "";
+  state.dagHistoryPage = 1;
+  state.dagHistoryTotalPages = 1;
+  $("#dagHistoryLabel").textContent = "No dag_id loaded.";
+  $("#dagHistoryBody").innerHTML = `<tr><td colspan="13">No history loaded.</td></tr>`;
+  $("#dagHistoryPageLabel").textContent = "Page 1 of 1";
+  $("#dagHistoryPageInput").value = 1;
+  $("#dagHistoryPageInput").max = 1;
+  $("#dagHistoryPrevPage").disabled = true;
+  $("#dagHistoryNextPage").disabled = true;
+}
+
+function setDagPage(page) {
+  state.dagPage = Math.min(Math.max(1, page), state.dagTotalPages);
+  loadDagEntries();
+}
+
+function setDagHistoryPage(page) {
+  if (!state.activeDagId) {
+    clearDagHistory();
+    return;
+  }
+  state.dagHistoryPage = Math.min(Math.max(1, page), state.dagHistoryTotalPages);
+  loadDagForEdit();
+}
+
+async function loadTaskEntries() {
+  const taskKey = $("#taskFilter").value.trim();
+  const query = new URLSearchParams();
+  if (taskKey) query.set("task_id", taskKey);
+  query.set("page", state.taskPage);
+  const rows = await api(`/api/task-entries?${query.toString()}`);
+  state.taskPage = rows.page || 1;
+  state.taskTotalPages = rows.total_pages || 1;
+  $("#taskPageLabel").textContent = `Page ${state.taskPage} of ${state.taskTotalPages} (${rows.total || 0} TASKS)`;
+  $("#taskPageInput").value = state.taskPage;
+  $("#taskPageInput").max = state.taskTotalPages;
+  $("#taskPrevPage").disabled = state.taskPage <= 1;
+  $("#taskNextPage").disabled = state.taskPage >= state.taskTotalPages;
+  $("#taskBody").innerHTML =
+    rows.rows
+      .map(
+        (row) => `
+          <tr>
+            <td>${row.id}</td>
+            <td>${escapeHtml(formatDateTime(row.created_at))}</td>
+            <td>${escapeHtml(row.dag_id)}</td>
+            <td>${escapeHtml(row.task_id)}</td>
+            <td>${escapeHtml(row.task_unique_key)}</td>
+            <td>${escapeHtml(row.task_name)}</td>
+            <td>${escapeHtml(row.shell_command)}</td>
+            <td>${escapeHtml(row.dependency_task || "")}</td>
+            <td>${escapeHtml(row.trigger_rule || "")}</td>
+          </tr>
+        `
+      )
+      .join("") || `<tr><td colspan="9">No TASKS records.</td></tr>`;
+}
+
+function fillTaskForm(row) {
+  const form = $("#taskForm");
+  TASK_FIELDS.forEach((key) => {
+    if (form.elements[key]) {
+      form.elements[key].value = row?.[key] ?? "";
+    }
+  });
+}
+
+function clearTaskHistory() {
+  state.activeTaskKey = "";
+  state.taskHistoryPage = 1;
+  state.taskHistoryTotalPages = 1;
+  $("#taskHistoryLabel").textContent = "No task_id loaded.";
+  $("#taskHistoryBody").innerHTML = `<tr><td colspan="10">No history loaded.</td></tr>`;
+  $("#taskHistoryPageLabel").textContent = "Page 1 of 1";
+  $("#taskHistoryPageInput").value = 1;
+  $("#taskHistoryPageInput").max = 1;
+  $("#taskHistoryPrevPage").disabled = true;
+  $("#taskHistoryNextPage").disabled = true;
+}
+
+function renderTaskHistory(data) {
+  const rows = data.history || [];
+  state.taskHistoryPage = data.page || 1;
+  state.taskHistoryTotalPages = data.total_pages || 1;
+  $("#taskHistoryLabel").textContent = rows.length
+    ? `${data.task_id}: ${data.total || 0} version(s), newest first.`
+    : `${data.task_id}: no history found.`;
+  $("#taskHistoryPageLabel").textContent = `Page ${state.taskHistoryPage} of ${state.taskHistoryTotalPages}`;
+  $("#taskHistoryPageInput").value = state.taskHistoryPage;
+  $("#taskHistoryPageInput").max = state.taskHistoryTotalPages;
+  $("#taskHistoryPrevPage").disabled = state.taskHistoryPage <= 1;
+  $("#taskHistoryNextPage").disabled = state.taskHistoryPage >= state.taskHistoryTotalPages;
+  $("#taskHistoryBody").innerHTML =
+    rows
+      .map(
+        (row) => `
+          <tr>
+            <td>${row.id}</td>
+            <td>${escapeHtml(formatDateTime(row.created_at))}</td>
+            <td>${escapeHtml(row.previous_entry_id || "")}</td>
+            <td>${escapeHtml(row.dag_id)}</td>
+            <td>${escapeHtml(row.task_id)}</td>
+            <td>${escapeHtml(row.task_unique_key)}</td>
+            <td>${escapeHtml(row.task_name)}</td>
+            <td>${escapeHtml(row.trigger_rule || "")}</td>
+            <td>${escapeHtml(row.task_inactive_flag || "")}</td>
+            <td>${formatDagChanges(row.changes)}</td>
+          </tr>
+        `
+      )
+      .join("") || `<tr><td colspan="10">No history for this task_id.</td></tr>`;
+}
+
+async function loadTaskForEdit() {
+  const taskKey = $("#taskLookupKey").value.trim();
+  if (!taskKey) {
+    clearTaskHistory();
+    return;
+  }
+  try {
+    const query = new URLSearchParams({ task_id: taskKey, page: state.taskHistoryPage });
+    const data = await api(`/api/task-history?${query.toString()}`);
+    state.activeTaskKey = data.task_id;
+    if (data.current_record) {
+      fillTaskForm(data.current_record);
+      $("#taskMessage").textContent = `Loaded latest version #${data.current_record.id}.`;
+      $("#taskMessage").className = "message ok";
+    } else {
+      $("#taskMessage").textContent = "No existing TASKS record. You can create a new one.";
+      $("#taskMessage").className = "message";
+    }
+    renderTaskHistory(data);
+  } catch (error) {
+    $("#taskMessage").textContent = error.message;
+    $("#taskMessage").className = "message error";
+  }
+}
+
+function setTaskPage(page) {
+  state.taskPage = Math.min(Math.max(1, page), state.taskTotalPages);
+  loadTaskEntries();
+}
+
+function setTaskHistoryPage(page) {
+  if (!state.activeTaskKey) {
+    clearTaskHistory();
+    return;
+  }
+  state.taskHistoryPage = Math.min(Math.max(1, page), state.taskHistoryTotalPages);
+  loadTaskForEdit();
+}
+
 function setExportFilter(filter) {
   state.exportFilter = filter;
   state.exportPage = 1;
@@ -127,9 +488,11 @@ function renderExportPreview() {
       ? state.exportRows
       : state.exportRows.filter((row) => row.action === state.exportFilter);
   const rows = [...filteredRows].sort((a, b) =>
-    String(b.created_at || "").localeCompare(String(a.created_at || ""))
+    String(b.created_at || "").localeCompare(String(a.created_at || "")) ||
+    Number(b.id || 0) - Number(a.id || 0)
   );
   const totalPages = Math.max(1, Math.ceil(rows.length / state.exportPageSize));
+  state.exportTotalPages = totalPages;
   state.exportPage = Math.min(Math.max(1, state.exportPage), totalPages);
   const pageStart = (state.exportPage - 1) * state.exportPageSize;
   const pageRows = rows.slice(pageStart, pageStart + state.exportPageSize);
@@ -143,6 +506,8 @@ function renderExportPreview() {
   $("#currentStopMetric").classList.toggle("active", state.exportFilter === "STOP");
   $("#currentResumeMetric").classList.toggle("active", state.exportFilter === "RESUME");
   $("#exportPageLabel").textContent = `Page ${state.exportPage} of ${totalPages}`;
+  $("#exportPageInput").value = state.exportPage;
+  $("#exportPageInput").max = totalPages;
   $("#exportPrevPage").disabled = state.exportPage <= 1;
   $("#exportNextPage").disabled = state.exportPage >= totalPages;
   $("#exportPreviewBody").innerHTML =
@@ -171,10 +536,17 @@ function changeExportPage(delta) {
   renderExportPreview();
 }
 
+function setExportPage(page) {
+  state.exportPage = Math.min(Math.max(1, page), state.exportTotalPages);
+  renderExportPreview();
+}
+
 async function refreshAll() {
   await loadSummary();
   await loadPending();
   await loadExportPreview();
+  await loadDagEntries();
+  await loadTaskEntries();
 }
 
 async function submitRequest(event) {
@@ -185,6 +557,9 @@ async function submitRequest(event) {
   message.className = "message";
 
   const payload = Object.fromEntries(new FormData(form));
+  if (!String(payload.task_unique_key || "").trim()) {
+    payload.task_unique_key = calculatedTaskUniqueKey(payload.dag_id, payload.task_id);
+  }
   try {
     const row = await api("/api/requests", {
       method: "POST",
@@ -306,6 +681,227 @@ async function importHistory(event) {
   }
 }
 
+async function importDagExcel(event) {
+  event.preventDefault();
+  const message = $("#dagImportMessage");
+  const fileInput = $("#dagImportFile");
+  message.textContent = "";
+  message.className = "message";
+  if (!fileInput.files.length) {
+    message.textContent = "Please choose an Excel file.";
+    message.classList.add("error");
+    return;
+  }
+
+  const formData = new FormData();
+  formData.append("file", fileInput.files[0]);
+  try {
+    const response = await fetch("/api/dag-import", {
+      method: "POST",
+      body: formData,
+    });
+    const data = await response.json();
+    if (!response.ok || data.error) {
+      throw new Error(data.error || "Import failed");
+    }
+    const failedText = data.failed_count
+      ? ` Failed ${data.failed_count} row(s); first issue: row ${data.failed_rows[0].row} - ${data.failed_rows[0].error}.`
+      : "";
+    message.textContent =
+      `Imported ${data.imported_count} DAG record(s) from ${data.sheet}. ` +
+      `Skipped ${data.skipped_unchanged} unchanged and ${data.skipped_blank_dag_id} blank dag_id row(s).` +
+      failedText;
+    message.classList.add(data.failed_count ? "error" : "ok");
+    fileInput.value = "";
+    state.dagPage = 1;
+    await loadDagEntries();
+    if (state.activeDagId) {
+      state.dagHistoryPage = 1;
+      $("#dagLookupId").value = state.activeDagId;
+      await loadDagForEdit();
+    }
+  } catch (error) {
+    message.textContent = error.message;
+    message.classList.add("error");
+  }
+}
+
+async function submitDagEntry(event) {
+  event.preventDefault();
+  const form = event.currentTarget;
+  const message = $("#dagMessage");
+  message.textContent = "";
+  message.className = "message";
+
+  const payload = Object.fromEntries(new FormData(form));
+  try {
+    const row = await api("/api/dag-entries", {
+      method: "POST",
+      body: JSON.stringify(payload),
+    });
+    message.textContent = `Saved DAG row #${row.id}.`;
+    message.classList.add("ok");
+    state.activeDagId = row.dag_id;
+    $("#dagLookupId").value = row.dag_id;
+    state.dagHistoryPage = 1;
+    form.dag_id.value = "";
+    form.description.value = "";
+    form.schedule_interval.value = "";
+    form.event_date_table.value = "";
+    form.start_datetime.value = "";
+    form.end_date.value = "";
+    form.email.value = "";
+    form.owner.value = "";
+    form.last_released_date.value = "";
+    form.machine_type.value = "";
+    form.image_version.value = "";
+    form.request_type.value = "";
+    form.num_workers.value = "";
+    form.run_on_holiday.value = "";
+    form.vm_alive_days.value = "";
+    form.skip_run_base_completion_toke.value = "";
+    form.token_file_bucket.value = "";
+    form.token_file_path_in_bucket.value = "";
+    form.pega_night_batch_flag.value = "";
+    form.stop_successful_mail_ser.value = "";
+    form.pega_intra_batch_flag.value = "";
+    form.myfeed_reminder_flag.value = "";
+    await loadDagEntries();
+    await loadDagForEdit();
+  } catch (error) {
+    message.textContent = error.message;
+    message.classList.add("error");
+  }
+}
+
+async function exportDagExcel() {
+  try {
+    const data = await api("/api/dag-export", { method: "POST", body: "{}" });
+    const link = $("#dagExportLink");
+    const fileName = data.file.split(/[\\/]/).pop();
+    link.hidden = false;
+    link.href = `/exports/${fileName}`;
+    link.textContent = `Open ${fileName} (${data.record_count} rows)`;
+  } catch (error) {
+    alert(error.message);
+  }
+}
+
+async function importTasksExcel(event) {
+  event.preventDefault();
+  const message = $("#tasksImportMessage");
+  const fileInput = $("#tasksImportFile");
+  message.textContent = "";
+  message.className = "message";
+  if (!fileInput.files.length) {
+    message.textContent = "Please choose an Excel file.";
+    message.classList.add("error");
+    return;
+  }
+
+  const formData = new FormData();
+  formData.append("file", fileInput.files[0]);
+  try {
+    const response = await fetch("/api/tasks-import", {
+      method: "POST",
+      body: formData,
+    });
+    const data = await response.json();
+    if (!response.ok || data.error) {
+      throw new Error(data.error || "Import failed");
+    }
+    const failedText = data.failed_count
+      ? ` Failed ${data.failed_count} row(s); first issue: row ${data.failed_rows[0].row} - ${data.failed_rows[0].error}.`
+      : "";
+    message.textContent =
+      `Imported ${data.imported_count} TASKS record(s) from ${data.sheet}. ` +
+      `Skipped ${data.skipped_unchanged} unchanged and ${data.skipped_blank_task} blank task row(s).` +
+      failedText;
+    message.classList.add(data.failed_count ? "error" : "ok");
+    fileInput.value = "";
+    state.taskPage = 1;
+    await loadTaskEntries();
+    if (state.activeTaskKey) {
+      state.taskHistoryPage = 1;
+      $("#taskLookupKey").value = state.activeTaskKey;
+      await loadTaskForEdit();
+    }
+  } catch (error) {
+    message.textContent = error.message;
+    message.classList.add("error");
+  }
+}
+
+async function submitTaskEntry(event) {
+  event.preventDefault();
+  const form = event.currentTarget;
+  const message = $("#taskMessage");
+  message.textContent = "";
+  message.className = "message";
+
+  const payload = Object.fromEntries(new FormData(form));
+  try {
+    const row = await api("/api/task-entries", {
+      method: "POST",
+      body: JSON.stringify(payload),
+    });
+    message.textContent = `Saved TASKS row #${row.id}.`;
+    message.classList.add("ok");
+    state.activeTaskKey = row.task_id;
+    $("#taskLookupKey").value = row.task_id;
+    state.taskHistoryPage = 1;
+    form.reset();
+    form.file_wait_bucket.value = "hsbc-10272718-ombbusvis-prod-team-wpbcamp";
+    form.filewait_time_out_in_secon.value = "0";
+    await loadTaskEntries();
+    await loadTaskForEdit();
+  } catch (error) {
+    message.textContent = error.message;
+    message.classList.add("error");
+  }
+}
+
+async function exportTasksExcel() {
+  try {
+    const data = await api("/api/tasks-export", { method: "POST", body: "{}" });
+    const link = $("#tasksExportLink");
+    const fileName = data.file.split(/[\\/]/).pop();
+    link.hidden = false;
+    link.href = `/exports/${fileName}`;
+    link.textContent = `Open ${fileName} (${data.record_count} rows)`;
+  } catch (error) {
+    alert(error.message);
+  }
+}
+
+async function exportDatabaseJson() {
+  try {
+    const data = await api("/api/export-json", { method: "POST", body: "{}" });
+    const link = $("#exportJsonLink");
+    const fileName = data.file.split(/[\\/]/).pop();
+    link.hidden = false;
+    link.href = `/exports/${fileName}`;
+    link.textContent =
+      `Open ${fileName} (` +
+      `${data.run_num_count || 0} Run_Num, ` +
+      `${data.task_only_run_num_count || 0} task-only Run_Num, ` +
+      `${data.matched_task_count || 0} matched TASKS)`;
+  } catch (error) {
+    alert(error.message);
+  }
+}
+
+function showPage(pageId) {
+  document.querySelectorAll(".page").forEach((page) => {
+    const active = page.id === pageId;
+    page.hidden = !active;
+    page.classList.toggle("active", active);
+  });
+  document.querySelectorAll(".tab-button").forEach((button) => {
+    button.classList.toggle("active", button.dataset.page === pageId);
+  });
+}
+
 document.addEventListener("change", (event) => {
   if (event.target.name === "action") {
     refreshDateDefaults();
@@ -315,6 +911,12 @@ document.addEventListener("change", (event) => {
 document.addEventListener("input", (event) => {
   if (event.target.name === "run_num") {
     refreshDateDefaults();
+  }
+  if (event.target.form?.id === "taskForm" && ["dag_id", "task_id"].includes(event.target.name)) {
+    refreshTaskUniqueKey();
+  }
+  if (event.target.form?.id === "taskForm" && event.target.name === "task_unique_key") {
+    refreshTaskUniqueKey();
   }
 });
 
@@ -326,14 +928,25 @@ document.addEventListener("click", (event) => {
 });
 
 $("#requestForm").addEventListener("submit", submitRequest);
+$("#dagForm").addEventListener("submit", submitDagEntry);
+$("#taskForm").addEventListener("submit", submitTaskEntry);
 $("#importForm").addEventListener("submit", importHistory);
+$("#dagImportForm").addEventListener("submit", importDagExcel);
+$("#tasksImportForm").addEventListener("submit", importTasksExcel);
 $("#refreshButton").addEventListener("click", refreshAll);
+$("#exportJsonButton").addEventListener("click", exportDatabaseJson);
 $("#lookupButton").addEventListener("click", lookupRunNum);
+$("#dagLookupButton").addEventListener("click", loadDagForEdit);
+$("#taskLookupButton").addEventListener("click", loadTaskForEdit);
 $("#willExportMetric").addEventListener("click", () => setExportFilter("ALL"));
 $("#currentStopMetric").addEventListener("click", () => setExportFilter("STOP"));
 $("#currentResumeMetric").addEventListener("click", () => setExportFilter("RESUME"));
 $("#exportPrevPage").addEventListener("click", () => changeExportPage(-1));
 $("#exportNextPage").addEventListener("click", () => changeExportPage(1));
+$("#exportGoPage").addEventListener("click", () => setExportPage(Number($("#exportPageInput").value || 1)));
+$("#exportPageInput").addEventListener("keydown", (event) => {
+  if (event.key === "Enter") setExportPage(Number($("#exportPageInput").value || 1));
+});
 $("#pendingMetric").addEventListener("click", () => {
   document.querySelector("#pendingBody").scrollIntoView({ behavior: "smooth", block: "start" });
 });
@@ -348,5 +961,65 @@ $("#lookupRunNum").addEventListener("keydown", (event) => {
   if (event.key === "Enter") lookupRunNum();
 });
 $("#exportButton").addEventListener("click", exportExcel);
+$("#dagFilter").addEventListener("input", () => {
+  state.dagPage = 1;
+  loadDagEntries();
+});
+$("#dagExportButton").addEventListener("click", exportDagExcel);
+$("#taskFilter").addEventListener("input", () => {
+  state.taskPage = 1;
+  loadTaskEntries();
+});
+$("#tasksExportButton").addEventListener("click", exportTasksExcel);
+$("#clearDagForm").addEventListener("click", () => {
+  $("#dagForm").reset();
+  $("#dagLookupId").value = "";
+  clearDagHistory();
+  $("#dagMessage").textContent = "";
+  $("#dagMessage").className = "message";
+});
+$("#clearTaskForm").addEventListener("click", () => {
+  $("#taskForm").reset();
+  $("#taskForm").file_wait_bucket.value = "hsbc-10272718-ombbusvis-prod-team-wpbcamp";
+  $("#taskForm").filewait_time_out_in_secon.value = "0";
+  refreshTaskUniqueKey();
+  $("#taskLookupKey").value = "";
+  clearTaskHistory();
+  $("#taskMessage").textContent = "";
+  $("#taskMessage").className = "message";
+});
+$("#dagLookupId").addEventListener("keydown", (event) => {
+  if (event.key === "Enter") loadDagForEdit();
+});
+$("#taskLookupKey").addEventListener("keydown", (event) => {
+  if (event.key === "Enter") loadTaskForEdit();
+});
+document.querySelectorAll(".tab-button").forEach((button) => {
+  button.addEventListener("click", () => showPage(button.dataset.page));
+});
+$("#dagPrevPage").addEventListener("click", () => setDagPage(state.dagPage - 1));
+$("#dagNextPage").addEventListener("click", () => setDagPage(state.dagPage + 1));
+$("#dagGoPage").addEventListener("click", () => setDagPage(Number($("#dagPageInput").value || 1)));
+$("#dagPageInput").addEventListener("keydown", (event) => {
+  if (event.key === "Enter") setDagPage(Number($("#dagPageInput").value || 1));
+});
+$("#dagHistoryPrevPage").addEventListener("click", () => setDagHistoryPage(state.dagHistoryPage - 1));
+$("#dagHistoryNextPage").addEventListener("click", () => setDagHistoryPage(state.dagHistoryPage + 1));
+$("#dagHistoryGoPage").addEventListener("click", () => setDagHistoryPage(Number($("#dagHistoryPageInput").value || 1)));
+$("#dagHistoryPageInput").addEventListener("keydown", (event) => {
+  if (event.key === "Enter") setDagHistoryPage(Number($("#dagHistoryPageInput").value || 1));
+});
+$("#taskPrevPage").addEventListener("click", () => setTaskPage(state.taskPage - 1));
+$("#taskNextPage").addEventListener("click", () => setTaskPage(state.taskPage + 1));
+$("#taskGoPage").addEventListener("click", () => setTaskPage(Number($("#taskPageInput").value || 1)));
+$("#taskPageInput").addEventListener("keydown", (event) => {
+  if (event.key === "Enter") setTaskPage(Number($("#taskPageInput").value || 1));
+});
+$("#taskHistoryPrevPage").addEventListener("click", () => setTaskHistoryPage(state.taskHistoryPage - 1));
+$("#taskHistoryNextPage").addEventListener("click", () => setTaskHistoryPage(state.taskHistoryPage + 1));
+$("#taskHistoryGoPage").addEventListener("click", () => setTaskHistoryPage(Number($("#taskHistoryPageInput").value || 1)));
+$("#taskHistoryPageInput").addEventListener("keydown", (event) => {
+  if (event.key === "Enter") setTaskHistoryPage(Number($("#taskHistoryPageInput").value || 1));
+});
 
 refreshAll();
