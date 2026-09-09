@@ -61,7 +61,7 @@ DAG_COLUMNS = [
     ("bucket_folder", "bucketFolder"),
     ("run_on_holiday", "run_on_holiday"),
     ("vm_alive_days", "VM_alive_days"),
-    ("skip_run_base_completion_toke", "skip_run_base_completion_toke"),
+    ("skip_run_base_completion_token", "skip_run_base_completion_token"),
     ("token_file_bucket", "token_file_bucket"),
     ("token_file_path_in_bucket", "token_file_path_in_bucket"),
     ("token_file_offset", "token_file_offset"),
@@ -87,7 +87,7 @@ DAG_REQUIRED_FIELDS = {
     "request_type",
     "bucket_folder",
     "run_on_holiday",
-    "skip_run_base_completion_toke",
+    "skip_run_base_completion_token",
     "token_file_offset",
 }
 TASK_COLUMNS = [
@@ -206,7 +206,7 @@ def init_db() -> None:
                 bucket_folder TEXT NOT NULL,
                 run_on_holiday TEXT NOT NULL,
                 vm_alive_days TEXT,
-                skip_run_base_completion_toke TEXT NOT NULL,
+                skip_run_base_completion_token TEXT NOT NULL,
                 token_file_bucket TEXT,
                 token_file_path_in_bucket TEXT,
                 token_file_offset TEXT NOT NULL,
@@ -223,6 +223,20 @@ def init_db() -> None:
         existing_dag_columns = {
             row["name"] for row in conn.execute("PRAGMA table_info(dag_entries)").fetchall()
         }
+        if (
+            "skip_run_base_completion_toke" in existing_dag_columns
+            and "skip_run_base_completion_token" not in existing_dag_columns
+        ):
+            conn.execute(
+                "ALTER TABLE dag_entries RENAME COLUMN skip_run_base_completion_toke TO skip_run_base_completion_token"
+            )
+            existing_dag_columns.remove("skip_run_base_completion_toke")
+            existing_dag_columns.add("skip_run_base_completion_token")
+        if "skip_run_base_completion_token" not in existing_dag_columns:
+            conn.execute(
+                "ALTER TABLE dag_entries ADD COLUMN skip_run_base_completion_token TEXT NOT NULL DEFAULT 'N'"
+            )
+            existing_dag_columns.add("skip_run_base_completion_token")
         if "previous_entry_id" not in existing_dag_columns:
             conn.execute("ALTER TABLE dag_entries ADD COLUMN previous_entry_id INTEGER")
         conn.execute(
@@ -662,7 +676,41 @@ def import_dag_excel(file_bytes: bytes) -> dict[str, Any]:
     if not rows:
         raise ValueError("Excel is empty")
 
-    headers = {normalize_header(value): index for index, value in enumerate(rows[0])}
+    header_row_index = 0
+    headers: dict[str, int] = {}
+    for index, candidate in enumerate(rows[:20]):
+        candidate_headers = {
+            normalize_header(value): column_index
+            for column_index, value in enumerate(candidate)
+            if normalize_header(value)
+        }
+        if "dag_id" in candidate_headers:
+            header_row_index = index
+            headers = candidate_headers
+            break
+    if not headers:
+        raise ValueError("DAG sheet header row not found. Expected a dag_id column.")
+
+    aliases = {
+        "ad_group": ("adgroup", "ad_group"),
+        "machine_type": ("machinetype", "machine_type"),
+        "mount_bucket": ("mountbucket", "mount_bucket"),
+        "image_version": ("imageversion", "image_version"),
+        "request_type": ("requesttype", "request_type"),
+        "num_workers": ("numworkers", "num_workers"),
+        "bucket_folder": ("bucketfolder", "bucket_folder"),
+        "vm_alive_days": ("vm_alive_days", "vm_alive_day", "VM_alive_days"),
+        "skip_run_base_completion_token": (
+            "skip_run_base_completion_token",
+            "skip_run_base_completion_toke",
+            "skip_run_base_completion_tokens",
+        ),
+        "stop_successful_mail_ser": (
+            "stop_successful_mail_ser",
+            "stop_successful_mail_server",
+            "stop_successful_mail_service",
+        ),
+    }
 
     def cell(row: tuple[Any, ...], *names: str) -> Any:
         for name in names:
@@ -677,11 +725,13 @@ def import_dag_excel(file_bytes: bytes) -> dict[str, Any]:
     failed_rows: list[dict[str, Any]] = []
 
     with connect() as conn:
-        for row_number, row in enumerate(rows[1:], start=2):
+        for row_number, row in enumerate(rows[header_row_index + 1 :], start=header_row_index + 2):
             values = {
-                key: cell_text(cell(row, key, label))
+                key: cell_text(cell(row, key, label, *aliases.get(key, ())))
                 for key, label in DAG_COLUMNS
             }
+            if not values["skip_run_base_completion_token"]:
+                values["skip_run_base_completion_token"] = "N"
             if not values["dag_id"]:
                 skipped_blank_dag_id += 1
                 continue
@@ -724,11 +774,13 @@ def import_dag_excel(file_bytes: bytes) -> dict[str, Any]:
 
     return {
         "sheet": sheet.title,
+        "header_row": header_row_index + 1,
         "imported_count": len(imported_ids),
         "skipped_blank_dag_id": skipped_blank_dag_id,
         "skipped_unchanged": skipped_unchanged,
         "failed_count": len(failed_rows),
         "failed_rows": failed_rows[:10],
+        "available_headers": list(headers.keys()),
         "imported_ids": imported_ids,
     }
 
@@ -1789,3 +1841,7 @@ def run() -> None:
 
 if __name__ == "__main__":
     run()
+
+
+
+

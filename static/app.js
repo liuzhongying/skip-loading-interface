@@ -224,7 +224,7 @@ function fillDagForm(row) {
     "bucket_folder",
     "run_on_holiday",
     "vm_alive_days",
-    "skip_run_base_completion_toke",
+    "skip_run_base_completion_token",
     "token_file_bucket",
     "token_file_path_in_bucket",
     "token_file_offset",
@@ -759,7 +759,7 @@ async function submitDagEntry(event) {
     form.num_workers.value = "";
     form.run_on_holiday.value = "";
     form.vm_alive_days.value = "";
-    form.skip_run_base_completion_toke.value = "";
+    form.skip_run_base_completion_token.value = "";
     form.token_file_bucket.value = "";
     form.token_file_path_in_bucket.value = "";
     form.pega_night_batch_flag.value = "";
@@ -1023,3 +1023,4 @@ $("#taskHistoryPageInput").addEventListener("keydown", (event) => {
 });
 
 refreshAll();
+
