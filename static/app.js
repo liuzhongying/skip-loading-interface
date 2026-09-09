@@ -30,7 +30,7 @@ const TASK_FIELDS = [
   "dependency_task",
   "file_wait_bucket",
   "file_wait",
-  "filewait_time_out_in_secon",
+  "filewait_time_out_in_seconds",
   "sensor_task_name",
   "parent_dag",
   "parent_task",
@@ -852,7 +852,7 @@ async function submitTaskEntry(event) {
     state.taskHistoryPage = 1;
     form.reset();
     form.file_wait_bucket.value = "hsbc-10272718-ombbusvis-prod-team-wpbcamp";
-    form.filewait_time_out_in_secon.value = "0";
+    form.filewait_time_out_in_seconds.value = "0";
     await loadTaskEntries();
     await loadTaskForEdit();
   } catch (error) {
@@ -981,7 +981,7 @@ $("#clearDagForm").addEventListener("click", () => {
 $("#clearTaskForm").addEventListener("click", () => {
   $("#taskForm").reset();
   $("#taskForm").file_wait_bucket.value = "hsbc-10272718-ombbusvis-prod-team-wpbcamp";
-  $("#taskForm").filewait_time_out_in_secon.value = "0";
+  $("#taskForm").filewait_time_out_in_seconds.value = "0";
   refreshTaskUniqueKey();
   $("#taskLookupKey").value = "";
   clearTaskHistory();

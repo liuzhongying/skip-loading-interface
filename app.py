@@ -101,7 +101,7 @@ TASK_COLUMNS = [
     ("dependency_task", "dependency_task"),
     ("file_wait_bucket", "file_wait_bucket"),
     ("file_wait", "file_wait"),
-    ("filewait_time_out_in_secon", "filewait_time_out_in_secon"),
+    ("filewait_time_out_in_seconds", "filewait_time_out_in_seconds"),
     ("sensor_task_name", "sensor_task_name"),
     ("parent_dag", "parent_dag"),
     ("parent_task", "parent_task"),
@@ -122,7 +122,7 @@ TASK_REQUIRED_FIELDS = {
     "task_name",
     "shell_command",
     "file_wait_bucket",
-    "filewait_time_out_in_secon",
+    "filewait_time_out_in_seconds",
 }
 
 
@@ -256,7 +256,7 @@ def init_db() -> None:
                 dependency_task TEXT,
                 file_wait_bucket TEXT NOT NULL,
                 file_wait TEXT,
-                filewait_time_out_in_secon TEXT NOT NULL,
+                filewait_time_out_in_seconds TEXT NOT NULL,
                 sensor_task_name TEXT,
                 parent_dag TEXT,
                 parent_task TEXT,
@@ -279,6 +279,20 @@ def init_db() -> None:
         existing_task_columns = {
             row["name"] for row in conn.execute("PRAGMA table_info(task_entries)").fetchall()
         }
+        if (
+            "filewait_time_out_in_secon" in existing_task_columns
+            and "filewait_time_out_in_seconds" not in existing_task_columns
+        ):
+            conn.execute(
+                "ALTER TABLE task_entries RENAME COLUMN filewait_time_out_in_secon TO filewait_time_out_in_seconds"
+            )
+            existing_task_columns.remove("filewait_time_out_in_secon")
+            existing_task_columns.add("filewait_time_out_in_seconds")
+        if "filewait_time_out_in_seconds" not in existing_task_columns:
+            conn.execute(
+                "ALTER TABLE task_entries ADD COLUMN filewait_time_out_in_seconds TEXT NOT NULL DEFAULT '0'"
+            )
+            existing_task_columns.add("filewait_time_out_in_seconds")
         if "previous_entry_id" not in existing_task_columns:
             conn.execute("ALTER TABLE task_entries ADD COLUMN previous_entry_id INTEGER")
         conn.execute(
@@ -1081,6 +1095,10 @@ def import_tasks_excel(file_bytes: bytes) -> dict[str, Any]:
     headers = {normalize_header(value): index for index, value in enumerate(rows[0])}
 
     aliases = {
+        "filewait_time_out_in_seconds": (
+            "filewait_time_out_in_seconds",
+            "filewait_time_out_in_secon",
+        ),
         "sensor_task_name": ("sensor_task_name", "sensor_task_na"),
         "parent_dag": ("parent_dag", "parent_dag_"),
         "parent_task": ("parent_task", "parent_task_"),
