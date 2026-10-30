@@ -15,7 +15,7 @@ from urllib.parse import parse_qs, urlparse
 from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 
 from openpyxl import Workbook, load_workbook
-from openpyxl.styles import Font, PatternFill
+from openpyxl.styles import Alignment, Font, PatternFill
 from openpyxl.worksheet.table import Table, TableStyleInfo
 
 
@@ -1549,6 +1549,48 @@ def combine_running_status(run_status: str, mc_status: str) -> str:
     return "RUNNING"
 
 
+def running_status_excel(payload: dict[str, Any]) -> bytes:
+    results = payload.get("results")
+    if not isinstance(results, list) or len(results) > 500:
+        raise ValueError("Expected up to 500 running status results")
+    workbook = Workbook()
+    workbook.remove(workbook.active)
+    headers = ["pyName", "pyLabel", "Run_Num", "最終狀態", "RUNNING的主要原因"]
+    sheets = {}
+    for status in ("RUNNING", "NOT_RUNNING", "UNKNOWN"):
+        sheet = workbook.create_sheet(status)
+        sheet.append(headers)
+        sheet.freeze_panes = "A2"
+        sheet.auto_filter.ref = "A1:E1"
+        for cell in sheet[1]:
+            cell.font = Font(bold=True)
+        for column, width in {"A": 34, "B": 32, "C": 16, "D": 18, "E": 100}.items():
+            sheet.column_dimensions[column].width = width
+        sheets[status] = sheet
+    for result in results:
+        if not isinstance(result, dict) or result.get("status") not in sheets:
+            raise ValueError("Invalid running status result")
+        entries = result.get("mc_entries") or []
+        tasks = result.get("tasks") or []
+        if not isinstance(entries, list) or not isinstance(tasks, list) or any(not isinstance(item, dict) for item in entries + tasks):
+            raise ValueError("Invalid result details")
+        labels = [str(result["py_label"])] if result.get("py_label") else list(dict.fromkeys(str(item["py_label"]) for item in entries if item.get("py_label")))
+        reasons = [str(result.get("reason") or "")]
+        reasons.extend(f"Task {item.get('task_id', '')}: {item.get('status', '')} — {item.get('reason', '')}" for item in tasks)
+        reasons.extend(f"MC record {item.get('id', '')}: {item.get('status', '')} — {item.get('reason', '')}" for item in entries)
+        values = [result.get("py_name"), "; ".join(labels), result.get("run_num"), result["status"], "\n".join(filter(None, reasons))]
+        sheet = sheets[result["status"]]
+        sheet.append([str(value) if value is not None else "" for value in values])
+        for cell in sheet[sheet.max_row]:
+            cell.data_type = "s"
+        sheet.cell(sheet.max_row, 5).alignment = Alignment(wrap_text=True, vertical="top")
+        sheet.auto_filter.ref = f"A1:E{sheet.max_row}"
+    workbook.properties.description = f"Running status query date: {payload.get('today', '')}"
+    output = BytesIO()
+    workbook.save(output)
+    return output.getvalue()
+
+
 def task_json_summary(task_row: sqlite3.Row, latest_dags: dict[str, sqlite3.Row]) -> dict[str, Any]:
     dag_row = latest_dags.get(str(task_row["dag_id"] or "").lower())
     latest_dag = None
@@ -2049,6 +2091,14 @@ class AppHandler(SimpleHTTPRequestHandler):
             payload = read_json(self)
             if parsed.path == "/api/running-status":
                 api_response(self, 200, check_running_status(payload))
+            elif parsed.path == "/api/running-status-excel":
+                data = running_status_excel(payload)
+                self.send_response(200)
+                self.send_header("Content-Type", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
+                self.send_header("Content-Disposition", 'attachment; filename="running-status.xlsx"')
+                self.send_header("Content-Length", str(len(data)))
+                self.end_headers()
+                self.wfile.write(data)
             elif parsed.path == "/api/requests":
                 api_response(self, 201, create_request(payload))
             elif parsed.path == "/api/dag-entries":

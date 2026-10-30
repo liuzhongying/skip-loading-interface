@@ -984,6 +984,7 @@ $("#runningForm").addEventListener("submit", async (event) => {
   event.preventDefault();
   runningResult = null;
   $("#runningDownload").disabled = true;
+  $("#runningExcelDownload").disabled = true;
   $("#runningResults").replaceChildren();
   $("#runningMessage").textContent = "Checking…";
   const pyNames = $("#runningInput").value.split(/[\n,，;；]+/).map((name) => name.trim()).filter(Boolean);
@@ -993,6 +994,7 @@ $("#runningForm").addEventListener("submit", async (event) => {
     });
     runningResult = data;
     $("#runningDownload").disabled = false;
+    $("#runningExcelDownload").disabled = false;
     $("#runningMessage").textContent = `Checked ${data.results.length} pyName(s), as of ${data.today}.`;
     $("#runningResults").innerHTML = data.results.map((item) => `
       <article class="panel">
@@ -1013,6 +1015,31 @@ $("#runningDownload").addEventListener("click", () => {
   link.download = `running-status-${runningResult.today}.json`;
   link.click();
   setTimeout(() => URL.revokeObjectURL(url), 1000);
+});
+$("#runningExcelDownload").addEventListener("click", async () => {
+  if (!runningResult) return;
+  const button = $("#runningExcelDownload");
+  button.disabled = true;
+  try {
+    const response = await fetch("/api/running-status-excel", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(runningResult),
+    });
+    if (!response.ok) {
+      const error = await response.json();
+      throw new Error(error.error || "Excel export failed");
+    }
+    const url = URL.createObjectURL(await response.blob());
+    const link = document.createElement("a");
+    link.href = url;
+    link.download = `running-status-${runningResult.today}.xlsx`;
+    link.click();
+    setTimeout(() => URL.revokeObjectURL(url), 1000);
+  } catch (error) {
+    $("#runningMessage").textContent = error.message;
+  } finally {
+    button.disabled = false;
+  }
 });
 $("#exportJsonButton").addEventListener("click", exportDatabaseJson);
 $("#lookupButton").addEventListener("click", lookupRunNum);
