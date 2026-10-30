@@ -155,9 +155,11 @@ def init_db() -> None:
     with connect() as conn:
         conn.execute("""CREATE TABLE IF NOT EXISTS mc_entries (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
-            proposition_active TEXT, py_name TEXT NOT NULL,
+            proposition_active TEXT, py_name TEXT NOT NULL, py_label TEXT,
             prod_start_dt TEXT, eligibility_rule TEXT, start_date TEXT, end_date TEXT
         )""")
+        if "py_label" not in {row["name"] for row in conn.execute("PRAGMA table_info(mc_entries)")}:
+            conn.execute("ALTER TABLE mc_entries ADD COLUMN py_label TEXT")
         conn.execute("CREATE INDEX IF NOT EXISTS idx_mc_py_name ON mc_entries(py_name COLLATE NOCASE)")
         conn.execute(
             """
@@ -1394,6 +1396,7 @@ def running_date(value: Any) -> date | None:
 
 def mc_validity(row: sqlite3.Row, current_day: date) -> dict[str, Any]:
     item = {key: row[key] for key in ("id", "py_name", "proposition_active", "prod_start_dt", "start_date", "end_date")}
+    item["py_label"] = row["py_label"] if "py_label" in row.keys() else None
     mode = str(row["proposition_active"] or "").strip().lower()
     if mode == "never":
         item.update(status="NOT_RUNNING", reason="MC_NEVER: proposition is inactive.")
@@ -1519,7 +1522,7 @@ def check_running_status(payload: dict[str, Any]) -> dict[str, Any]:
         for name in names:
             matched = by_name.get(name.casefold(), [])
             numbers = run_nums_from_mc_name(name)
-            result: dict[str, Any] = {"py_name": name, "run_num": numbers[0] if len(numbers) == 1 else None,
+            result: dict[str, Any] = {"py_name": name, "py_label": (matched[0]["py_label"] if len(matched) == 1 and "py_label" in matched[0].keys() else None), "run_num": numbers[0] if len(numbers) == 1 else None,
                                       "status": "UNKNOWN", "reason": "", "run_status": None,
                                       "run_reason": None, "tasks": [], "skip_loading": None, "mc_entries": []}
             if not matched:
@@ -1913,14 +1916,14 @@ def import_mc_excel(file_bytes: bytes) -> dict[str, Any]:
                 if isinstance(value, (datetime, date)):
                     return value.isoformat(sep=" ") if isinstance(value, datetime) else value.isoformat()
                 return str(value).strip()
-            rows.append(tuple(cell_value(row[i]) for i in (0, 2, 10, 12, 26, 27)))
+            rows.append(tuple(cell_value(row[i]) for i in (0, 2, 8, 10, 12, 26, 27)))
         if not rows:
             raise ValueError("No rows with a pyName found; no records were imported.")
         with connect() as conn:
             conn.execute("DELETE FROM mc_entries")
             conn.executemany("""INSERT INTO mc_entries
-                (proposition_active, py_name, prod_start_dt, eligibility_rule, start_date, end_date)
-                VALUES (?, ?, ?, ?, ?, ?)""", rows)
+                (proposition_active, py_name, py_label, prod_start_dt, eligibility_rule, start_date, end_date)
+                VALUES (?, ?, ?, ?, ?, ?, ?)""", rows)
         return {"imported_count": len(rows), "skipped_count": skipped, "sheet": sheet.title}
     finally:
         workbook.close()
@@ -1932,7 +1935,7 @@ def lookup_mc(key: str, page: int = 1, page_size: int = 10) -> dict[str, Any]:
         total = conn.execute("SELECT COUNT(*) FROM mc_entries WHERE py_name = ? COLLATE NOCASE", (key,)).fetchone()[0]
         pages = max(1, (total + page_size - 1) // page_size)
         page = min(max(1, page), pages)
-        rows = conn.execute("""SELECT proposition_active, py_name, prod_start_dt, eligibility_rule, start_date, end_date
+        rows = conn.execute("""SELECT proposition_active, py_name, py_label, prod_start_dt, eligibility_rule, start_date, end_date
             FROM mc_entries WHERE py_name = ? COLLATE NOCASE ORDER BY id DESC LIMIT ? OFFSET ?""",
             (key, page_size, (page - 1) * page_size)).fetchall()
     return {"items": [dict(row) for row in rows], "total": total, "page": page, "total_pages": pages}

@@ -942,7 +942,7 @@ async function loadMcPage(page) {
     const result = await api(`/api/mc?key=${encodeURIComponent(mcActiveKey)}&page=${page}`);
     mcPage = result.page;
     mcTotalPages = result.total_pages;
-    $("#mcBody").innerHTML = result.items.map((row) => `<tr>${["proposition_active", "py_name", "prod_start_dt", "eligibility_rule", "start_date", "end_date"].map((field) => `<td>${escapeHtml(row[field])}</td>`).join("")}</tr>`).join("") || '<tr><td colspan="6">No matching records.</td></tr>';
+    $("#mcBody").innerHTML = result.items.map((row) => `<tr>${["proposition_active", "py_name", "py_label", "prod_start_dt", "eligibility_rule", "start_date", "end_date"].map((field) => `<td>${escapeHtml(row[field])}</td>`).join("")}</tr>`).join("") || '<tr><td colspan="7">No matching records.</td></tr>';
     $("#mcMessage").textContent = `${result.total} record(s) found.`;
     $("#mcPageLabel").textContent = `Page ${mcPage} of ${mcTotalPages}`;
     $("#mcPrev").disabled = mcPage <= 1;

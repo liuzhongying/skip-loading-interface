@@ -29,7 +29,7 @@ class McTests(unittest.TestCase):
         sheet.append(headers)
         for index in range(12):
             row = [None] * 28
-            for column, value in {0: "Date", 2: "KEY", 10: datetime(2026, 8, 1, 6), 12: f"rule{index}", 26: "start", 27: "end"}.items():
+            for column, value in {0: "Date", 2: "KEY", 8: "Label", 10: datetime(2026, 8, 1, 6), 12: f"rule{index}", 26: "start", 27: "end"}.items():
                 row[column] = value
             sheet.append(row)
         output = BytesIO()
@@ -41,6 +41,7 @@ class McTests(unittest.TestCase):
         result = app.lookup_mc("key")
         self.assertEqual((result["total"], result["total_pages"], len(result["items"])), (12, 2, 10))
         self.assertEqual(result["items"][0]["prod_start_dt"], "2026-08-01 06:00:00")
+        self.assertEqual(result["items"][0]["py_label"], "Label")
         self.assertEqual(len(app.lookup_mc("KEY", 2)["items"]), 2)
         self.assertEqual(app.lookup_mc("missing")["total"], 0)
 
@@ -54,6 +55,22 @@ class McTests(unittest.TestCase):
         app.import_mc_excel(self.workbook())
         app.import_mc_excel(self.workbook())
         self.assertEqual(app.lookup_mc("KEY")["total"], 12)
+
+    def test_running_status_includes_label_for_each_mc_record(self):
+        app.import_mc_excel(self.workbook())
+        result = app.check_running_status({"py_names": ["KEY", "missing"]})["results"]
+        self.assertEqual(result[0]["reason"].split(":")[0], "DUPLICATE_MC_PYNAME")
+        self.assertTrue(all(entry["py_label"] == "Label" for entry in result[0]["mc_entries"]))
+        self.assertIsNone(result[0]["py_label"])
+        self.assertIsNone(result[1]["py_label"])
+
+    def test_running_status_includes_label_for_unique_name(self):
+        app.import_mc_excel(self.workbook())
+        with app.connect() as conn:
+            conn.execute("DELETE FROM mc_entries WHERE id > 1")
+        result = app.check_running_status({"py_names": ["KEY"]})["results"][0]
+        self.assertEqual(result["py_label"], "Label")
+        self.assertEqual(result["mc_entries"][0]["py_label"], "Label")
 
 
 if __name__ == "__main__":
