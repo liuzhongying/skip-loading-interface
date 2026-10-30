@@ -86,7 +86,6 @@ DAG_REQUIRED_FIELDS = {
     "mount_bucket",
     "image_version",
     "request_type",
-    "bucket_folder",
     "run_on_holiday",
     "skip_run_base_completion_token",
     "token_file_offset",
@@ -121,9 +120,6 @@ TASK_REQUIRED_FIELDS = {
     "dag_id",
     "task_id",
     "task_name",
-    "shell_command",
-    "file_wait_bucket",
-    "filewait_time_out_in_seconds",
 }
 
 
@@ -1528,7 +1524,7 @@ def check_running_status(payload: dict[str, Any]) -> dict[str, Any]:
             if not matched:
                 result["reason"] = "NO_MC_FOR_PYNAME: no matching MC entry found."
             elif len(matched) > 1:
-                result["reason"] = "DUPLICATE_MC_PYNAME: expected exactly one MC record for this pyName."
+                result["reason"] = "DUPLICATE_MC_PYNAME: multiple MC records; MC validity cannot be determined."
                 result["mc_entries"] = [mc_validity(row, current_day) for row in matched]
             elif len(numbers) != 1:
                 result["reason"] = "UNKNOWN_RUN_NUM: pyName must contain exactly one distinct SAS Run_Num."

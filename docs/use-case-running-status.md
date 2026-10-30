@@ -139,7 +139,7 @@ Input: run_num, today
 - `Always` 和 `Date` 同時需要已到 `Prod_Start_Dt`；不認識的狀態或無法判斷的必要日期顯示 `UNKNOWN`。
 - 日期只比較日曆日期，開始及結束日期當日包含在內。`Always` 不需要 `StartDate` 或 `EndDate`；`Date` 必須有有效的日期範圍。
 - `Prod_Start_Dt` 必須有有效日期，包括 `Always`；缺失或無效顯示 `UNKNOWN`。
-- MC 的 pyName 應該唯一，並且包含 SAS 數字。找不到 pyName、同一 pyName 有多筆記錄，或名稱沒有唯一的 SAS 數字時，顯示 `UNKNOWN` 並說明原因；重複記錄仍逐筆顯示。
+- 同一個 pyName 可能有多筆 MC 記錄；此時無法判斷 MC 狀態，結果顯示 `UNKNOWN`，並逐筆顯示記錄。找不到 pyName，或名稱沒有唯一的 SAS 數字時，也顯示 `UNKNOWN` 並說明原因。
 - MC 匯入使用整份 Excel 替換現有 MC 資料；查詢基於當前已匯入的快照。
 
 ## 原有 Run_Num 規則範例

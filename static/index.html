@@ -305,9 +305,9 @@
               numWorkers
               <input name="num_workers" placeholder="Optional" />
             </label>
-            <label class="required">
+            <label>
               bucketFolder
-              <input name="bucket_folder" required value="callable_dags" />
+              <input name="bucket_folder" placeholder="Optional" />
             </label>
             <label class="required">
               run_on_holiday
@@ -493,9 +493,9 @@
               task_name
               <input name="task_name" required placeholder="e.g. CUS_001_DAILY_A_TASK_RDP2912" />
             </label>
-            <label class="required wide">
+            <label class="wide">
               shell_command
-              <textarea name="shell_command" required rows="3" placeholder="python3 /airflow/..."></textarea>
+              <textarea name="shell_command" rows="3" placeholder="python3 /airflow/..."></textarea>
             </label>
             <label>
               dataproc_bucket
@@ -513,17 +513,17 @@
               dependency_task
               <input name="dependency_task" placeholder="Optional" />
             </label>
-            <label class="required">
+            <label>
               file_wait_bucket
-              <input name="file_wait_bucket" required value="hsbc-10272718-ombbusvis-prod-team-wpbcamp" />
+              <input name="file_wait_bucket" value="hsbc-10272718-ombbusvis-prod-team-wpbcamp" />
             </label>
             <label class="wide">
               file_wait
               <input name="file_wait" placeholder="Optional" />
             </label>
-            <label class="required">
+            <label>
               filewait_time_out_in_seconds
-              <input name="filewait_time_out_in_seconds" required value="0" />
+              <input name="filewait_time_out_in_seconds" value="0" />
             </label>
             <label>
               sensor_task_name
