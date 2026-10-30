@@ -24,6 +24,8 @@
         <button class="tab-button active" id="skipTab" type="button" data-page="skipPage">Skip Loading</button>
         <button class="tab-button" id="dagTab" type="button" data-page="dagPage">DAG Scheduler</button>
         <button class="tab-button" id="tasksTab" type="button" data-page="tasksPage">TASKS</button>
+        <button class="tab-button" type="button" data-page="mcPage">MC</button>
+        <button class="tab-button" type="button" data-page="runningPage">Check Running Status</button>
       </nav>
 
       <div id="skipPage" class="page active">
@@ -670,8 +672,45 @@
           </div>
         </section>
       </div>
+      <div id="mcPage" class="page" hidden>
+        <section class="panel">
+          <div class="panel-title"><h2>MC</h2></div>
+          <form id="mcImportForm" class="import-row">
+            <input name="file" type="file" accept=".xlsx,.xlsm" required />
+            <button class="primary" type="submit">Import MC Excel</button>
+          </form>
+          <p id="mcImportMessage" class="message" role="status"></p>
+          <form id="mcLookupForm" class="lookup-row">
+            <input id="mcKey" placeholder="Enter pyName" aria-label="pyName" required />
+            <button type="submit">Search</button>
+          </form>
+          <p id="mcMessage" class="message" role="status"></p>
+          <div class="table-wrap"><table class="wide-table">
+            <thead><tr><th>pyIsPropositionActive</th><th>pyName</th><th>Prod_Start_Dt</th><th>EligibilityRule</th><th>StartDate</th><th>EndDate</th></tr></thead>
+            <tbody id="mcBody"><tr><td colspan="6">No search results.</td></tr></tbody>
+          </table></div>
+          <div class="pagination" aria-label="MC pagination">
+            <button id="mcPrev" type="button" disabled>Previous</button><span id="mcPageLabel">Page 1 of 1</span>
+            <button id="mcNext" type="button" disabled>Next</button>
+          </div>
+        </section>
+      </div>
+      <div id="runningPage" class="page" hidden>
+        <section class="panel">
+          <div class="panel-title"><h2>Check Running Status</h2></div>
+          <form id="runningForm">
+            <label>pyName（以換行或逗號分隔）
+              <textarea id="runningInput" rows="5" required placeholder="Offer_SAS3337&#10;Another_SAS3337"></textarea>
+            </label>
+            <button class="primary" type="submit">Check status</button>
+            <button id="runningDownload" type="button" disabled>Download JSON</button>
+          </form>
+          <p id="runningMessage" class="message" role="status"></p>
+          <div id="runningResults"></div>
+        </section>
+      </div>
     </main>
-    <script src="/static/app.js?v=20260804-db-json-export"></script>
+    <script src="/static/app.js?v=20261030-running-pyname"></script>
   </body>
 </html>
 

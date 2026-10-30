@@ -1,6 +1,6 @@
 # Use Case Running Status 說明
 
-這份文檔說明如何判斷一個 use case 現在是否仍在運行中。判斷需要同時看 `Skip Loading`、`TASKS`、`DAG Scheduler` 和 `VM_alive_days`，不能只靠單一欄位。
+這份文檔說明如何判斷一個 use case 現在是否仍在運行中。判斷需要同時看 `Skip Loading`、`TASKS`、`DAG Scheduler`、`VM_alive_days` 和 `MC`，不能只靠單一欄位。
 
 核心語義：
 
@@ -17,6 +17,7 @@
 3. 對應 task 的最新版本沒有被 inactive，即 `task_inactive_flag` 不是 `Y`。
 4. 對應 task 所屬的 `dag_id` 在 `DAG Scheduler` 裏仍在有效日期內。
 5. `DAG Scheduler.VM_alive_days` 顯示 VM 仍在有效期內。
+6. 該 pyName 的 MC 記錄有效，並已到 `Prod_Start_Dt`。
 
 只要其中一項不成立，就不能判斷為正在運行。
 
@@ -38,6 +39,8 @@
 - 如果最新有效記錄不存在，代表沒有 skip 限制，進入下一步。
 - 如果最新有效記錄是 `RESUME`，代表 skip 已解除，進入下一步。
 - 如果最新有效記錄是 `STOP`，並且 `end_date >= today`，結果是 `STOPPED_BY_SKIP_LOADING`。
+- 如果 `end_date` 的年份是 `9999`，代表沒有結束日期，STOP 持續有效。
+- 如果 STOP 的結束日期無法解析，總結論是 `UNKNOWN`。
 - 如果最新有效記錄是 `STOP`，但 `end_date < today`，這個 STOP 已過期，視為沒有當前 skip 限制，進入下一步。
 
 ### TASKS
@@ -46,9 +49,9 @@
 
 `run_num` 和 `task_id` 的關係：
 
-- 業務判斷是：這個 `run_num` 是否出現在 `TASKS.task_id` 裏。
-- 查找時建議先用標準化後的 `run_num` 做包含匹配，例如 `task_id LIKE '%<run_num>%'`。
-- 如果將來有更明確的 mapping table，應以 mapping table 為準。
+- `task_id` 中 `RDP` 後面的完整數字代表 `run_num`，必須完整匹配，不能只做數字包含匹配。
+- 前導零有意義，例如 `003337` 只匹配 `RDP003337`，不匹配 `RDP3337`。
+- 例如查找 `3337` 時，`CUS_001_DAILY_A_TASK_RDP3337` 匹配，但 `CUS_002_DAILY_A_TASK_RDP13337` 不匹配。
 
 判斷方式：
 
@@ -78,13 +81,15 @@
 
 `VM_alive_days` 用來判斷 VM 是否仍然有效。它應該和 DAG 的起始日期一起使用。
 
-建議判斷方式：
+已確認的日期判斷方式：
 
 - `vm_start_day = start_day`
+- 只比較日期，不計 `start_datetime` 的小時和分鐘；開始當日算第 1 日。
 - `vm_end_day = start_day + VM_alive_days - 1 day`
 - 當 `vm_start_day <= today <= vm_end_day` 時，VM 仍有效。
+- 例如 `start_datetime = 2026-08-01 18:00`、`VM_alive_days = 10`，有效期為 2026-08-01 至 2026-08-10，2026-08-11 開始過期。
 
-如果 `VM_alive_days` 是空白或不能解析為數字，不能直接判斷 VM 仍有效，結果應為 `UNKNOWN_VM_VALIDITY`。這種情況不應顯示為確定 `RUNNING`。
+如果 `VM_alive_days` 是空白，代表 VM 沒有到期日；DAG 日期仍須有效。0、負數、小數或無法解析的值無效，結果為 `UNKNOWN_VM_VALIDITY`。DAG 日期無法解析或日期範圍顛倒時，結果為 `UNKNOWN_DAG_DATES`。
 
 ## 建議判斷順序
 
@@ -97,7 +102,7 @@ Input: run_num, today
    - 最新有效記錄是 STOP 且 end_date >= today -> STOPPED_BY_SKIP_LOADING
    - 最新有效記錄是 STOP 但 end_date < today -> STOP 已過期，繼續下一步
 
-2. 用 run_num 查找 TASKS.task_id
+2. 用 run_num 完整匹配 TASKS.task_id 中 RDP 後的數字
    - 找不到 -> NO_TASK_FOR_RUN_NUM
 
 3. 對每個對應 task 讀取最新 task 版本
@@ -122,10 +127,24 @@ Input: run_num, today
 
 - 只要 `Skip Loading` 當前是有效 `STOP`，use case 總結論就是 `NOT_RUNNING`。
 - 只要至少一個 task 判斷為 `RUNNING`，use case 總結論是 `RUNNING`。
-- 如果沒有 task 是 `RUNNING`，但至少一個 task 是 `UNKNOWN_VM_VALIDITY`，use case 總結論是 `UNKNOWN`。
+- 如果沒有 task 是 `RUNNING`，但至少一個 task 的有效性是 `UNKNOWN`，use case 總結論是 `UNKNOWN`。
 - 如果所有 task 都明確不運行，use case 總結論是 `NOT_RUNNING`。
 
-## 範例
+以上是 Run_Num 原有的結論。與 MC 結合後，兩者都有效才是 `RUNNING`；任何一方明確無效時是 `NOT_RUNNING`；否則是 `UNKNOWN`。
+
+## MC
+
+- 查詢以 `pyName` 為 key，按 pyName 分別判斷。`pyName` 中 `SAS` 後的完整數字字串對應 `run_num`，不區分大小寫，並保留前導零。多個 pyName 可對應同一 Run_Num，共用原有 Run_Num 判斷，但各自結合自己的 MC 資料。
+- `pyIsPropositionActive = Never` 表示無效；`Always` 表示不受 proposition 日期範圍限制；`Date` 表示要在 `StartDate` 到 `EndDate` 的範圍內。
+- `Always` 和 `Date` 同時需要已到 `Prod_Start_Dt`；不認識的狀態或無法判斷的必要日期顯示 `UNKNOWN`。
+- 日期只比較日曆日期，開始及結束日期當日包含在內。`Always` 不需要 `StartDate` 或 `EndDate`；`Date` 必須有有效的日期範圍。
+- `Prod_Start_Dt` 必須有有效日期，包括 `Always`；缺失或無效顯示 `UNKNOWN`。
+- MC 的 pyName 應該唯一，並且包含 SAS 數字。找不到 pyName、同一 pyName 有多筆記錄，或名稱沒有唯一的 SAS 數字時，顯示 `UNKNOWN` 並說明原因；重複記錄仍逐筆顯示。
+- MC 匯入使用整份 Excel 替換現有 MC 資料；查詢基於當前已匯入的快照。
+
+## 原有 Run_Num 規則範例
+
+以下範例只展示 Run_Num 原有的判斷；最終結果還須結合 MC。
 
 ### 範例 1：Skip Loading STOP，所以不運行
 

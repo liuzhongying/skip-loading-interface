@@ -7,6 +7,7 @@ import re
 import sqlite3
 import sys
 from io import BytesIO
+from contextlib import closing
 from datetime import date, datetime, timedelta
 from pathlib import Path
 from typing import Any
@@ -152,6 +153,12 @@ def backup_database(batch_id: str) -> Path:
 
 def init_db() -> None:
     with connect() as conn:
+        conn.execute("""CREATE TABLE IF NOT EXISTS mc_entries (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            proposition_active TEXT, py_name TEXT NOT NULL,
+            prod_start_dt TEXT, eligibility_rule TEXT, start_date TEXT, end_date TEXT
+        )""")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_mc_py_name ON mc_entries(py_name COLLATE NOCASE)")
         conn.execute(
             """
             CREATE TABLE IF NOT EXISTS requests (
@@ -1370,6 +1377,179 @@ def run_nums_from_task_id(task_id: str) -> list[str]:
     return list(dict.fromkeys(re.findall(r"RDP(\d+)", task_id or "", flags=re.IGNORECASE)))
 
 
+def run_nums_from_mc_name(py_name: str) -> list[str]:
+    return list(dict.fromkeys(re.findall(r"SAS([0-9]+)", py_name or "", flags=re.IGNORECASE)))
+
+
+def running_date(value: Any) -> date | None:
+    text = str(value or "").strip()
+    try:
+        parts = text.split(",")
+        if len(parts) >= 3:
+            return date(*(int(part.strip()) for part in parts[:3]))
+        return date.fromisoformat(text[:10])
+    except (ValueError, TypeError, OverflowError):
+        return None
+
+
+def mc_validity(row: sqlite3.Row, current_day: date) -> dict[str, Any]:
+    item = {key: row[key] for key in ("id", "py_name", "proposition_active", "prod_start_dt", "start_date", "end_date")}
+    mode = str(row["proposition_active"] or "").strip().lower()
+    if mode == "never":
+        item.update(status="NOT_RUNNING", reason="MC_NEVER: proposition is inactive.")
+        return item
+    if mode not in ("always", "date"):
+        item.update(status="UNKNOWN", reason="UNKNOWN_MC_MODE: proposition status is missing or invalid.")
+        return item
+    prod_start = running_date(row["prod_start_dt"])
+    if prod_start is None:
+        item.update(status="UNKNOWN", reason="UNKNOWN_MC_PROD_START: production start date is missing or invalid.")
+        return item
+    if current_day < prod_start:
+        item.update(status="NOT_RUNNING", reason=f"MC_NOT_STARTED: production starts on {prod_start}.")
+        return item
+    if mode == "date":
+        start, end = running_date(row["start_date"]), running_date(row["end_date"])
+        if start is None or end is None or start > end:
+            item.update(status="UNKNOWN", reason="UNKNOWN_MC_DATES: date range is missing, invalid or inverted.")
+            return item
+        if current_day < start:
+            item.update(status="NOT_RUNNING", reason=f"MC_NOT_STARTED: proposition starts on {start}.")
+            return item
+        if current_day > end:
+            item.update(status="NOT_RUNNING", reason=f"MC_EXPIRED: proposition ended on {end}.")
+            return item
+    item.update(status="RUNNING", reason="MC_VALID: proposition and production start dates are effective.")
+    return item
+
+
+def run_num_statuses(conn: sqlite3.Connection, run_nums: list[str], current_day: date) -> list[dict[str, Any]]:
+    tasks = conn.execute("""
+        SELECT t.* FROM task_entries t JOIN
+        (SELECT MAX(id) AS id FROM task_entries GROUP BY LOWER(task_id)) latest
+        ON t.id = latest.id ORDER BY t.task_id
+    """).fetchall()
+    dags = conn.execute("""
+        SELECT d.* FROM dag_entries d JOIN
+        (SELECT MAX(id) AS id FROM dag_entries GROUP BY LOWER(dag_id)) latest
+        ON d.id = latest.id
+    """).fetchall()
+    dag_by_id = {row["dag_id"].lower(): row for row in dags}
+    by_run: dict[str, list[sqlite3.Row]] = {}
+    for task in tasks:
+        for run_num in run_nums_from_task_id(task["task_id"]):
+            by_run.setdefault(run_num, []).append(task)
+    results = []
+    for run_num in run_nums:
+        skip = latest_effective_request(conn, run_num)
+        result: dict[str, Any] = {"run_num": run_num, "status": "", "reason": "", "tasks": [],
+            "skip_loading": None if skip is None else {"id": skip["id"], "action": skip["action"], "end_date": skip["end_date"], "status": skip["status"]}}
+        if skip is not None and skip["action"] == "STOP":
+            end = running_date(skip["end_date"])
+            if end is None:
+                result.update(status="UNKNOWN", reason="UNKNOWN_SKIP_END_DATE: STOP end date is invalid.")
+                results.append(result)
+                continue
+            if end.year == 9999 or end >= current_day:
+                result.update(status="NOT_RUNNING", reason="STOPPED_BY_SKIP_LOADING: effective STOP has not expired.")
+                results.append(result)
+                continue
+        for task in by_run.get(run_num, []):
+            item = {"task_id": task["task_id"], "dag_id": task["dag_id"], "task_version_id": task["id"], "status": "", "reason": ""}
+            dag = dag_by_id.get(str(task["dag_id"]).lower())
+            if str(task["task_inactive_flag"] or "").strip().upper() == "Y":
+                item.update(status="NOT_RUNNING_TASK_INACTIVE", reason="Latest task version is inactive.")
+            elif dag is None:
+                item.update(status="NO_DAG_FOR_TASK", reason="No DAG found for the task.")
+            else:
+                item["dag_version_id"] = dag["id"]
+                start, end = running_date(dag["start_datetime"]), running_date(dag["end_date"])
+                if start is None or end is None or start > end:
+                    item.update(status="UNKNOWN_DAG_DATES", reason="DAG dates are missing, invalid, or inverted.")
+                elif current_day < start:
+                    item.update(status="NOT_RUNNING_DAG_NOT_STARTED", reason=f"DAG starts on {start}.")
+                elif current_day > end:
+                    item.update(status="NOT_RUNNING_DAG_EXPIRED", reason=f"DAG expired after {end}.")
+                else:
+                    days_text = str(dag["vm_alive_days"] or "").strip()
+                    try:
+                        if not days_text:
+                            item.update(status="RUNNING", reason="DAG is valid; blank VM_alive_days means no VM expiry.")
+                        elif not re.fullmatch(r"[0-9]+", days_text) or int(days_text) < 1:
+                            raise ValueError()
+                        else:
+                            vm_end = start + timedelta(days=int(days_text) - 1)
+                            item["vm_end_day"] = vm_end.isoformat()
+                            if current_day <= vm_end:
+                                item.update(status="RUNNING", reason=f"DAG and VM are valid through {vm_end}.")
+                            else:
+                                item.update(status="NOT_RUNNING_VM_EXPIRED", reason=f"VM expired after {vm_end}.")
+                    except (ValueError, OverflowError):
+                        item.update(status="UNKNOWN_VM_VALIDITY", reason="VM_alive_days is missing or invalid.")
+            result["tasks"].append(item)
+        if not result["tasks"]:
+            result.update(status="NOT_RUNNING", reason="NO_TASK_FOR_RUN_NUM: no matching task found.")
+        elif any(item["status"] == "RUNNING" for item in result["tasks"]):
+            result.update(status="RUNNING", reason="At least one matching task is running.")
+        elif any(item["status"].startswith("UNKNOWN") for item in result["tasks"]):
+            result.update(status="UNKNOWN", reason="No task is confirmed running; at least one task has unknown validity.")
+        else:
+            result.update(status="NOT_RUNNING", reason="All matching tasks are not running.")
+        results.append(result)
+    return results
+
+def check_running_status(payload: dict[str, Any]) -> dict[str, Any]:
+    values = payload.get("py_names")
+    if not isinstance(values, list) or not values or len(values) > 500:
+        raise ValueError("Enter between 1 and 500 pyName values")
+    if any(not isinstance(value, str) or not value.strip() for value in values):
+        raise ValueError("Each pyName must be a non-empty string")
+    names = list(dict.fromkeys(value.strip() for value in values))
+    current_day = today()
+    with closing(sqlite3.connect(DB_PATH.resolve().as_uri() + "?mode=ro", uri=True, timeout=30)) as conn:
+        conn.row_factory = sqlite3.Row
+        conn.execute("BEGIN")
+        rows = conn.execute("SELECT * FROM mc_entries ORDER BY id").fetchall()
+        by_name: dict[str, list[sqlite3.Row]] = {}
+        for row in rows:
+            by_name.setdefault(row["py_name"].casefold(), []).append(row)
+        run_nums = list(dict.fromkeys(num for name in names for num in run_nums_from_mc_name(name)))
+        base = {row["run_num"]: row for row in run_num_statuses(conn, run_nums, current_day)}
+        results = []
+        for name in names:
+            matched = by_name.get(name.casefold(), [])
+            numbers = run_nums_from_mc_name(name)
+            result: dict[str, Any] = {"py_name": name, "run_num": numbers[0] if len(numbers) == 1 else None,
+                                      "status": "UNKNOWN", "reason": "", "run_status": None,
+                                      "run_reason": None, "tasks": [], "skip_loading": None, "mc_entries": []}
+            if not matched:
+                result["reason"] = "NO_MC_FOR_PYNAME: no matching MC entry found."
+            elif len(matched) > 1:
+                result["reason"] = "DUPLICATE_MC_PYNAME: expected exactly one MC record for this pyName."
+                result["mc_entries"] = [mc_validity(row, current_day) for row in matched]
+            elif len(numbers) != 1:
+                result["reason"] = "UNKNOWN_RUN_NUM: pyName must contain exactly one distinct SAS Run_Num."
+                result["mc_entries"] = [mc_validity(row, current_day) for row in matched]
+            else:
+                run = base[numbers[0]]
+                result.update(run_status=run["status"], run_reason=run["reason"], tasks=run["tasks"], skip_loading=run["skip_loading"])
+                result["mc_entries"] = [mc_validity(row, current_day) for row in matched]
+                for item in result["mc_entries"]:
+                    item["combined_status"] = combine_running_status(run["status"], item["status"])
+                result["status"] = result["mc_entries"][0]["combined_status"]
+                result["reason"] = f"Run_Num {numbers[0]}: {run['status']} — {run['reason']}"
+            results.append(result)
+    return {"today": current_day.isoformat(), "results": results}
+
+
+def combine_running_status(run_status: str, mc_status: str) -> str:
+    if "NOT_RUNNING" in (run_status, mc_status):
+        return "NOT_RUNNING"
+    if "UNKNOWN" in (run_status, mc_status):
+        return "UNKNOWN"
+    return "RUNNING"
+
+
 def task_json_summary(task_row: sqlite3.Row, latest_dags: dict[str, sqlite3.Row]) -> dict[str, Any]:
     dag_row = latest_dags.get(str(task_row["dag_id"] or "").lower())
     latest_dag = None
@@ -1706,6 +1886,58 @@ def read_multipart_file(handler: SimpleHTTPRequestHandler, field_name: str) -> b
     raise ValueError("Uploaded file field not found")
 
 
+def import_mc_excel(file_bytes: bytes) -> dict[str, Any]:
+    workbook = load_workbook(BytesIO(file_bytes), read_only=True, data_only=True)
+    try:
+        matches = []
+        for sheet in workbook.worksheets:
+            for row_number, row in enumerate(sheet.iter_rows(min_row=1, max_row=20, values_only=True), 1):
+                if len(row) >= 28 and str(row[2] or "").strip().lower() == "pyname":
+                    matches.append((sheet, row_number, row))
+        if len(matches) != 1:
+            raise ValueError("Expected exactly one sheet with pyName in column C; check the Excel header.")
+        sheet, header_row, header = matches[0]
+        if any(not str(header[i] or "").strip() for i in (0, 10, 12, 26, 27)):
+            raise ValueError("Missing header in one of columns A, K, M, AA or AB.")
+        rows = []
+        skipped = 0
+        for row in sheet.iter_rows(min_row=header_row + 1, min_col=1, max_col=28, values_only=True):
+            key = str(row[2] or "").strip()
+            if not key:
+                if any(value is not None for value in row):
+                    skipped += 1
+                continue
+            def cell_value(value: Any) -> str:
+                if value is None:
+                    return ""
+                if isinstance(value, (datetime, date)):
+                    return value.isoformat(sep=" ") if isinstance(value, datetime) else value.isoformat()
+                return str(value).strip()
+            rows.append(tuple(cell_value(row[i]) for i in (0, 2, 10, 12, 26, 27)))
+        if not rows:
+            raise ValueError("No rows with a pyName found; no records were imported.")
+        with connect() as conn:
+            conn.execute("DELETE FROM mc_entries")
+            conn.executemany("""INSERT INTO mc_entries
+                (proposition_active, py_name, prod_start_dt, eligibility_rule, start_date, end_date)
+                VALUES (?, ?, ?, ?, ?, ?)""", rows)
+        return {"imported_count": len(rows), "skipped_count": skipped, "sheet": sheet.title}
+    finally:
+        workbook.close()
+
+
+def lookup_mc(key: str, page: int = 1, page_size: int = 10) -> dict[str, Any]:
+    key = require_text({"key": key}, "key", "pyName")
+    with connect() as conn:
+        total = conn.execute("SELECT COUNT(*) FROM mc_entries WHERE py_name = ? COLLATE NOCASE", (key,)).fetchone()[0]
+        pages = max(1, (total + page_size - 1) // page_size)
+        page = min(max(1, page), pages)
+        rows = conn.execute("""SELECT proposition_active, py_name, prod_start_dt, eligibility_rule, start_date, end_date
+            FROM mc_entries WHERE py_name = ? COLLATE NOCASE ORDER BY id DESC LIMIT ? OFFSET ?""",
+            (key, page_size, (page - 1) * page_size)).fetchall()
+    return {"items": [dict(row) for row in rows], "total": total, "page": page, "total_pages": pages}
+
+
 class AppHandler(SimpleHTTPRequestHandler):
     def do_GET(self) -> None:
         parsed = urlparse(self.path)
@@ -1741,6 +1973,9 @@ class AppHandler(SimpleHTTPRequestHandler):
                 with connect() as conn:
                     rows = effective_export_rows(conn)
                     api_response(self, 200, [row_to_dict(row) for row in rows])
+            elif parsed.path == "/api/mc":
+                query = parse_qs(parsed.query)
+                api_response(self, 200, lookup_mc(query.get("key", [""])[0], normalized_page(query.get("page", [None])[0])))
             elif parsed.path == "/api/dag-entries":
                 query = parse_qs(parsed.query)
                 api_response(
@@ -1797,6 +2032,9 @@ class AppHandler(SimpleHTTPRequestHandler):
     def do_POST(self) -> None:
         parsed = urlparse(self.path)
         try:
+            if parsed.path == "/api/mc-import":
+                api_response(self, 200, import_mc_excel(read_multipart_file(self, "file")))
+                return
             if parsed.path == "/api/import-history":
                 file_bytes = read_multipart_file(self, "file")
                 api_response(self, 200, import_history_excel(file_bytes))
@@ -1810,7 +2048,9 @@ class AppHandler(SimpleHTTPRequestHandler):
                 api_response(self, 200, import_tasks_excel(file_bytes))
                 return
             payload = read_json(self)
-            if parsed.path == "/api/requests":
+            if parsed.path == "/api/running-status":
+                api_response(self, 200, check_running_status(payload))
+            elif parsed.path == "/api/requests":
                 api_response(self, 201, create_request(payload))
             elif parsed.path == "/api/dag-entries":
                 api_response(self, 201, create_dag_entry(payload))

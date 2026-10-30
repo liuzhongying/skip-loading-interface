@@ -933,7 +933,87 @@ $("#taskForm").addEventListener("submit", submitTaskEntry);
 $("#importForm").addEventListener("submit", importHistory);
 $("#dagImportForm").addEventListener("submit", importDagExcel);
 $("#tasksImportForm").addEventListener("submit", importTasksExcel);
+let mcPage = 1;
+let mcTotalPages = 1;
+let mcActiveKey = "";
+async function loadMcPage(page) {
+  if (!mcActiveKey) return;
+  try {
+    const result = await api(`/api/mc?key=${encodeURIComponent(mcActiveKey)}&page=${page}`);
+    mcPage = result.page;
+    mcTotalPages = result.total_pages;
+    $("#mcBody").innerHTML = result.items.map((row) => `<tr>${["proposition_active", "py_name", "prod_start_dt", "eligibility_rule", "start_date", "end_date"].map((field) => `<td>${escapeHtml(row[field])}</td>`).join("")}</tr>`).join("") || '<tr><td colspan="6">No matching records.</td></tr>';
+    $("#mcMessage").textContent = `${result.total} record(s) found.`;
+    $("#mcPageLabel").textContent = `Page ${mcPage} of ${mcTotalPages}`;
+    $("#mcPrev").disabled = mcPage <= 1;
+    $("#mcNext").disabled = mcPage >= mcTotalPages;
+  } catch (error) {
+    $("#mcMessage").textContent = error.message;
+  }
+}
+$("#mcLookupForm").addEventListener("submit", (event) => {
+  event.preventDefault();
+  mcActiveKey = $("#mcKey").value.trim();
+  if (mcActiveKey) loadMcPage(1);
+});
+$("#mcPrev").addEventListener("click", () => loadMcPage(mcPage - 1));
+$("#mcNext").addEventListener("click", () => loadMcPage(mcPage + 1));
+$("#mcImportForm").addEventListener("submit", async (event) => {
+  event.preventDefault();
+  const message = $("#mcImportMessage");
+  const button = event.currentTarget.querySelector("button");
+  const data = new FormData(event.currentTarget);
+  button.disabled = true;
+  message.textContent = "Importing...";
+  try {
+    const response = await fetch("/api/mc-import", { method: "POST", body: data });
+    const result = await response.json();
+    if (!response.ok || result.error) throw new Error(result.error || "Import failed");
+    message.textContent = `Imported ${result.imported_count} record(s) from ${result.sheet}; skipped ${result.skipped_count} row(s) without pyName.`;
+    event.target.reset();
+    if (mcActiveKey) await loadMcPage(1);
+  } catch (error) {
+    message.textContent = error.message;
+  } finally {
+    button.disabled = false;
+  }
+});
 $("#refreshButton").addEventListener("click", refreshAll);
+let runningResult = null;
+$("#runningForm").addEventListener("submit", async (event) => {
+  event.preventDefault();
+  runningResult = null;
+  $("#runningDownload").disabled = true;
+  $("#runningResults").replaceChildren();
+  $("#runningMessage").textContent = "Checking…";
+  const pyNames = $("#runningInput").value.split(/[\n,，;；]+/).map((name) => name.trim()).filter(Boolean);
+  try {
+    const data = await api("/api/running-status", {
+      method: "POST", body: JSON.stringify({ py_names: pyNames }),
+    });
+    runningResult = data;
+    $("#runningDownload").disabled = false;
+    $("#runningMessage").textContent = `Checked ${data.results.length} pyName(s), as of ${data.today}.`;
+    $("#runningResults").innerHTML = data.results.map((item) => `
+      <article class="panel">
+        <h3>${escapeHtml(item.py_name)} — ${escapeHtml(item.status)}</h3>
+        <p>${escapeHtml(item.reason)}</p>
+        ${item.tasks.length ? `<ul>${item.tasks.map((task) => `<li><strong>${escapeHtml(task.task_id)}</strong> (${escapeHtml(task.dag_id)}): ${escapeHtml(task.status)} — ${escapeHtml(task.reason)}</li>`).join("")}</ul>` : ""}
+        ${item.mc_entries.length ? `<ul>${item.mc_entries.map((mc) => `<li><strong>MC record ${escapeHtml(mc.id)}</strong>: ${escapeHtml(mc.combined_status ?? mc.status)} (MC: ${escapeHtml(mc.status)}) — ${escapeHtml(mc.reason)}</li>`).join("")}</ul>` : ""}
+      </article>`).join("");
+  } catch (error) {
+    $("#runningMessage").textContent = error.message;
+  }
+});
+$("#runningDownload").addEventListener("click", () => {
+  if (!runningResult) return;
+  const url = URL.createObjectURL(new Blob([JSON.stringify(runningResult, null, 2)], {type: "application/json"}));
+  const link = document.createElement("a");
+  link.href = url;
+  link.download = `running-status-${runningResult.today}.json`;
+  link.click();
+  setTimeout(() => URL.revokeObjectURL(url), 1000);
+});
 $("#exportJsonButton").addEventListener("click", exportDatabaseJson);
 $("#lookupButton").addEventListener("click", lookupRunNum);
 $("#dagLookupButton").addEventListener("click", loadDagForEdit);
