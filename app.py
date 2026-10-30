@@ -151,11 +151,13 @@ def init_db() -> None:
     with connect() as conn:
         conn.execute("""CREATE TABLE IF NOT EXISTS mc_entries (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
-            proposition_active TEXT, py_name TEXT NOT NULL, py_label TEXT,
+            proposition_active TEXT, py_name TEXT NOT NULL, py_label TEXT, bs_group TEXT,
             prod_start_dt TEXT, eligibility_rule TEXT, start_date TEXT, end_date TEXT
         )""")
         if "py_label" not in {row["name"] for row in conn.execute("PRAGMA table_info(mc_entries)")}:
             conn.execute("ALTER TABLE mc_entries ADD COLUMN py_label TEXT")
+        if "bs_group" not in {row["name"] for row in conn.execute("PRAGMA table_info(mc_entries)")}:
+            conn.execute("ALTER TABLE mc_entries ADD COLUMN bs_group TEXT")
         conn.execute("CREATE INDEX IF NOT EXISTS idx_mc_py_name ON mc_entries(py_name COLLATE NOCASE)")
         conn.execute(
             """
@@ -1393,6 +1395,8 @@ def running_date(value: Any) -> date | None:
 def mc_validity(row: sqlite3.Row, current_day: date) -> dict[str, Any]:
     item = {key: row[key] for key in ("id", "py_name", "proposition_active", "prod_start_dt", "start_date", "end_date")}
     item["py_label"] = row["py_label"] if "py_label" in row.keys() else None
+    item["bs_group"] = row["bs_group"] if "bs_group" in row.keys() else None
+    item["eligibility_rule"] = row["eligibility_rule"] if "eligibility_rule" in row.keys() else None
     mode = str(row["proposition_active"] or "").strip().lower()
     if mode == "never":
         item.update(status="NOT_RUNNING", reason="MC_NEVER: proposition is inactive.")
@@ -1555,16 +1559,19 @@ def running_status_excel(payload: dict[str, Any]) -> bytes:
         raise ValueError("Expected up to 500 running status results")
     workbook = Workbook()
     workbook.remove(workbook.active)
-    headers = ["pyName", "pyLabel", "Run_Num", "最終狀態", "RUNNING的主要原因"]
+    mc_columns = [("MC record ID", "id"), ("pyIsPropositionActive", "proposition_active"),
+                  ("BSGroup", "bs_group"), ("Prod_Start_Dt", "prod_start_dt"),
+                  ("EligibilityRule", "eligibility_rule"), ("StartDate", "start_date"), ("EndDate", "end_date")]
+    headers = ["pyName", "pyLabel", "Run_Num", "最終狀態", "RUNNING的主要原因"] + [label for label, _ in mc_columns]
     sheets = {}
     for status in ("RUNNING", "NOT_RUNNING", "UNKNOWN"):
         sheet = workbook.create_sheet(status)
         sheet.append(headers)
         sheet.freeze_panes = "A2"
-        sheet.auto_filter.ref = "A1:E1"
+        sheet.auto_filter.ref = "A1:L1"
         for cell in sheet[1]:
             cell.font = Font(bold=True)
-        for column, width in {"A": 34, "B": 32, "C": 16, "D": 18, "E": 100}.items():
+        for column, width in {"A": 34, "B": 32, "C": 16, "D": 18, "E": 100, "F": 18, "G": 25, "H": 24, "I": 22, "J": 32, "K": 22, "L": 22}.items():
             sheet.column_dimensions[column].width = width
         sheets[status] = sheet
     for result in results:
@@ -1578,13 +1585,20 @@ def running_status_excel(payload: dict[str, Any]) -> bytes:
         reasons = [str(result.get("reason") or "")]
         reasons.extend(f"Task {item.get('task_id', '')}: {item.get('status', '')} — {item.get('reason', '')}" for item in tasks)
         reasons.extend(f"MC record {item.get('id', '')}: {item.get('status', '')} — {item.get('reason', '')}" for item in entries)
-        values = [result.get("py_name"), "; ".join(labels), result.get("run_num"), result["status"], "\n".join(filter(None, reasons))]
+        def mc_value(key: str) -> str:
+            if len(entries) == 1:
+                return str(entries[0].get(key) or "")
+            return "\n".join(f"[{item.get('id', '')}] {item.get(key) or ''}" for item in entries)
+
+        values = [result.get("py_name"), "; ".join(labels), result.get("run_num"), result["status"], "\n".join(filter(None, reasons))] + [mc_value(key) for _, key in mc_columns]
         sheet = sheets[result["status"]]
         sheet.append([str(value) if value is not None else "" for value in values])
         for cell in sheet[sheet.max_row]:
             cell.data_type = "s"
         sheet.cell(sheet.max_row, 5).alignment = Alignment(wrap_text=True, vertical="top")
-        sheet.auto_filter.ref = f"A1:E{sheet.max_row}"
+        for cell in list(sheet[sheet.max_row])[5:]:
+            cell.alignment = Alignment(wrap_text=True, vertical="top")
+        sheet.auto_filter.ref = f"A1:L{sheet.max_row}"
     workbook.properties.description = f"Running status query date: {payload.get('today', '')}"
     output = BytesIO()
     workbook.save(output)
@@ -1940,9 +1954,13 @@ def import_mc_excel(file_bytes: bytes) -> dict[str, Any]:
         sheet, header_row, header = matches[0]
         if any(not str(header[i] or "").strip() for i in (0, 10, 12, 26, 27)):
             raise ValueError("Missing header in one of columns A, K, M, AA or AB.")
+        bs_indexes = [i for i, value in enumerate(header) if str(value or "").strip().casefold() == "bsgroup"]
+        if len(bs_indexes) > 1:
+            raise ValueError("Multiple BSGroup columns found; please check the Excel header.")
+        bs_index = bs_indexes[0] if bs_indexes else None
         rows = []
         skipped = 0
-        for row in sheet.iter_rows(min_row=header_row + 1, min_col=1, max_col=28, values_only=True):
+        for row in sheet.iter_rows(min_row=header_row + 1, min_col=1, max_col=max(28, (bs_index or 0) + 1), values_only=True):
             key = str(row[2] or "").strip()
             if not key:
                 if any(value is not None for value in row):
@@ -1954,15 +1972,15 @@ def import_mc_excel(file_bytes: bytes) -> dict[str, Any]:
                 if isinstance(value, (datetime, date)):
                     return value.isoformat(sep=" ") if isinstance(value, datetime) else value.isoformat()
                 return str(value).strip()
-            rows.append(tuple(cell_value(row[i]) for i in (0, 2, 8, 10, 12, 26, 27)))
+            rows.append(tuple(cell_value(row[i]) for i in (0, 2, 8, 10, 12, 26, 27)) + (cell_value(row[bs_index]) if bs_index is not None else "",))
         if not rows:
             raise ValueError("No rows with a pyName found; no records were imported.")
         with connect() as conn:
             conn.execute("DELETE FROM mc_entries")
             conn.executemany("""INSERT INTO mc_entries
-                (proposition_active, py_name, py_label, prod_start_dt, eligibility_rule, start_date, end_date)
-                VALUES (?, ?, ?, ?, ?, ?, ?)""", rows)
-        return {"imported_count": len(rows), "skipped_count": skipped, "sheet": sheet.title}
+                (proposition_active, py_name, py_label, prod_start_dt, eligibility_rule, start_date, end_date, bs_group)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?)""", rows)
+        return {"imported_count": len(rows), "skipped_count": skipped, "sheet": sheet.title, "bs_group_found": bs_index is not None}
     finally:
         workbook.close()
 
@@ -1973,7 +1991,7 @@ def lookup_mc(key: str, page: int = 1, page_size: int = 10) -> dict[str, Any]:
         total = conn.execute("SELECT COUNT(*) FROM mc_entries WHERE py_name = ? COLLATE NOCASE", (key,)).fetchone()[0]
         pages = max(1, (total + page_size - 1) // page_size)
         page = min(max(1, page), pages)
-        rows = conn.execute("""SELECT proposition_active, py_name, py_label, prod_start_dt, eligibility_rule, start_date, end_date
+        rows = conn.execute("""SELECT proposition_active, py_name, py_label, prod_start_dt, eligibility_rule, start_date, end_date, bs_group
             FROM mc_entries WHERE py_name = ? COLLATE NOCASE ORDER BY id DESC LIMIT ? OFFSET ?""",
             (key, page_size, (page - 1) * page_size)).fetchall()
     return {"items": [dict(row) for row in rows], "total": total, "page": page, "total_pages": pages}

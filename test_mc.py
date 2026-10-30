@@ -5,7 +5,7 @@ from datetime import datetime
 from io import BytesIO
 from pathlib import Path
 
-from openpyxl import Workbook
+from openpyxl import Workbook, load_workbook
 import app
 
 
@@ -21,16 +21,20 @@ class McTests(unittest.TestCase):
         gc.collect()
         self.temp.cleanup()
 
-    def workbook(self, valid=True):
+    def workbook(self, valid=True, bs_group=True):
         workbook = Workbook()
         sheet = workbook.active
         headers = [f"col{i}" for i in range(1, 29)]
         headers[2] = "pyName" if valid else "other"
+        if bs_group:
+            headers.append("BSGroup")
         sheet.append(headers)
         for index in range(12):
-            row = [None] * 28
+            row = [None] * len(headers)
             for column, value in {0: "Date", 2: "KEY", 8: "Label", 10: datetime(2026, 8, 1, 6), 12: f"rule{index}", 26: "start", 27: "end"}.items():
                 row[column] = value
+            if bs_group:
+                row[28] = "Group A"
             sheet.append(row)
         output = BytesIO()
         workbook.save(output)
@@ -42,6 +46,7 @@ class McTests(unittest.TestCase):
         self.assertEqual((result["total"], result["total_pages"], len(result["items"])), (12, 2, 10))
         self.assertEqual(result["items"][0]["prod_start_dt"], "2026-08-01 06:00:00")
         self.assertEqual(result["items"][0]["py_label"], "Label")
+        self.assertEqual(result["items"][0]["bs_group"], "Group A")
         self.assertEqual(len(app.lookup_mc("KEY", 2)["items"]), 2)
         self.assertEqual(app.lookup_mc("missing")["total"], 0)
 
@@ -55,6 +60,18 @@ class McTests(unittest.TestCase):
         app.import_mc_excel(self.workbook())
         app.import_mc_excel(self.workbook())
         self.assertEqual(app.lookup_mc("KEY")["total"], 12)
+
+    def test_missing_bs_group_is_reported(self):
+        result = app.import_mc_excel(self.workbook(bs_group=False))
+        self.assertFalse(result["bs_group_found"])
+        self.assertEqual(app.lookup_mc("KEY")["items"][0]["bs_group"], "")
+
+    def test_existing_database_gains_bs_group(self):
+        with app.connect() as conn:
+            conn.execute("ALTER TABLE mc_entries DROP COLUMN bs_group")
+        app.init_db()
+        self.assertTrue(app.import_mc_excel(self.workbook())["bs_group_found"])
+        self.assertEqual(app.lookup_mc("KEY")["items"][0]["bs_group"], "Group A")
 
     def test_running_status_includes_label_for_each_mc_record(self):
         app.import_mc_excel(self.workbook())
@@ -71,6 +88,11 @@ class McTests(unittest.TestCase):
         result = app.check_running_status({"py_names": ["KEY"]})["results"][0]
         self.assertEqual(result["py_label"], "Label")
         self.assertEqual(result["mc_entries"][0]["py_label"], "Label")
+        self.assertEqual(result["mc_entries"][0]["bs_group"], "Group A")
+        self.assertEqual(result["mc_entries"][0]["eligibility_rule"], "rule0")
+        exported = load_workbook(BytesIO(app.running_status_excel({"today": "2026-10-31", "results": [result]})))
+        self.assertEqual(exported["UNKNOWN"]["H2"].value, "Group A")
+        self.assertEqual(exported["UNKNOWN"]["J2"].value, "rule0")
 
 
 if __name__ == "__main__":
